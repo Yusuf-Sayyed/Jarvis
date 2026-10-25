@@ -1,5 +1,5 @@
 """
-Unit tests for command routing and confirmation state transitions.
+Unit tests for command routing: YouTube playback, browser tab actions, and confirmation flows.
 """
 
 import unittest
@@ -14,8 +14,8 @@ class TestRouter(unittest.TestCase):
         self.assertIsNone(pending)
 
     def test_close_tab_confirmation_flow(self):
-        # 1. User says "close the current tab" -> asks for confirmation
-        should_continue, pending = route_command("close the current tab")
+        # 1. User says "close this tab" -> asks for confirmation
+        should_continue, pending = route_command("close this tab")
         self.assertTrue(should_continue)
         self.assertEqual(pending, "close_tab")
 
@@ -24,12 +24,28 @@ class TestRouter(unittest.TestCase):
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
 
-        # 3. User says "close the current tab" again
-        should_continue, pending = route_command("close the current tab")
+        # 3. User says "can you close the current tab?"
+        should_continue, pending = route_command("can you close the current tab?")
+        self.assertTrue(should_continue)
         self.assertEqual(pending, "close_tab")
 
         # 4. User says "yes" -> confirms and clears pending action
         should_continue, pending = route_command("yes", pending_action="close_tab")
+        self.assertTrue(should_continue)
+        self.assertIsNone(pending)
+
+    def test_open_new_tab(self):
+        should_continue, pending = route_command("open a new tab")
+        self.assertTrue(should_continue)
+        self.assertIsNone(pending)
+
+    def test_youtube_playback_routing(self):
+        should_continue, pending = route_command("play relaxing music on youtube")
+        self.assertTrue(should_continue)
+        self.assertIsNone(pending)
+
+    def test_youtube_first_result_routing(self):
+        should_continue, pending = route_command("open the first youtube result")
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
 

@@ -16,12 +16,12 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
     """
     intent, params = detect_intent(text, pending_action)
 
-    # 1. Confirmation Responses
+    # 1. Confirmation Responses (Yes / No)
     if intent == "CONFIRM_ACTION":
         action = params.get("action")
         print(f"[Intent: CONFIRM_ACTION | Action: {action}]")
         if action == "close_tab":
-            keyboard.send_browser_shortcut("close_tab")
+            keyboard.close_browser_tab()
         return True, None
 
     if intent == "CANCEL_ACTION":
@@ -43,7 +43,24 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         print("         Say 'yes' to confirm or 'no' to cancel.\n")
         return True, action
 
-    # 4. Web Search Intent
+    # 4. YouTube Direct Video Playback
+    if intent == "YOUTUBE_PLAY":
+        query = params.get("query", "")
+        if not query:
+            print("[Intent: YOUTUBE_PLAY | Query Unclear]")
+            print("[JARVIS] \"Please state what video or song you would like to play, Sir.\"")
+            return True, None
+
+        print(f"[Intent: YOUTUBE_PLAY | Query: \"{query}\"]")
+        browser.play_youtube_video(query)
+        return True, None
+
+    if intent == "YOUTUBE_FIRST_RESULT":
+        print("[Intent: YOUTUBE_FIRST_RESULT]")
+        browser.open_first_youtube_result()
+        return True, None
+
+    # 5. Web Search Intent (Search results page)
     if intent == "BROWSER_SEARCH":
         engine = params.get("engine", "google")
         query = params.get("query", "")
@@ -56,7 +73,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         browser.search_web(query, engine)
         return True, None
 
-    # 5. Typing Intent
+    # 6. Typing Intent
     if intent == "TYPE_TEXT":
         content = params.get("content", "")
         press_enter = params.get("press_enter", False)
@@ -69,14 +86,14 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         keyboard.type_text(content, press_enter)
         return True, None
 
-    # 6. Browser Navigation Actions
+    # 7. Browser Navigation Actions
     if intent == "BROWSER_ACTION":
         action = params.get("action")
         print(f"[Intent: BROWSER_ACTION | Action: {action}]")
         keyboard.send_browser_shortcut(action)
         return True, None
 
-    # 7. Desktop Core Launch Actions
+    # 8. Desktop Core Launch Actions
     if intent == "DESKTOP_ACTION":
         action = params.get("action")
         print(f"[Intent: DESKTOP_ACTION | Action: {action}]")
@@ -96,7 +113,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 print(f"[JARVIS Error] Failed to execute action '{action}': {e}")
         return True, None
 
-    # 8. Ollama Fallback
+    # 9. Ollama Fallback
     if intent == "OLLAMA_QUERY":
         prompt = params.get("prompt", text)
         ask_ollama(prompt)

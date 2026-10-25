@@ -10,7 +10,7 @@ MODEL_DIR = BASE_DIR / "vosk-model-small-en-us-0.15"
 
 # Audio Settings
 SAMPLE_RATE = 16000
-CHUNK_SIZE = 4000
+CHUNK_SIZE = 2000  # 125ms audio chunks for lower latency and smoother recognition
 
 # Wake-Word & Session Timing
 SESSION_TIMEOUT_SECONDS = 300  # 5 minutes active session

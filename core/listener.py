@@ -64,6 +64,7 @@ def init_speech_model() -> tuple[Model, KaldiRecognizer]:
         sys.exit(1)
 
     recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+    recognizer.SetWords(True)
     return model, recognizer
 
 

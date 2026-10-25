@@ -1,22 +1,79 @@
 """
 Speech normalization and intent detection for voice commands.
+Supports conversational lead-ins, phonetic correction, and YouTube direct playback.
 """
 
 import re
 from core.config import EXIT_COMMANDS
 
+CONVERSATIONAL_PREFIXES = (
+    r"^(?:(?:hey|hi|hello|ok|okay)?\s*jarvis\s*,?\s*)?"
+    r"(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+|will\s+you\s+|i\s+want\s+you\s+to\s+|can\s+we\s+)+"
+)
+
 
 def normalize_spoken_text(text: str) -> str:
     """
-    Normalizes common Vosk speech-recognition acoustic splits and trailing punctuation.
+    Normalizes common Vosk speech-recognition acoustic splits, phonetic confusions,
+    conversational prefixes, and trailing punctuation.
     """
     text = text.lower().strip()
+
+    # Phonetic and compound word repairs
     text = re.sub(r"\byou\s+tube\b", "youtube", text)
     text = re.sub(r"\bgoo\s+gle\b", "google", text)
     text = re.sub(r"\bfire\s+fox\b", "firefox", text)
     text = re.sub(r"\bdown\s+loads\b", "downloads", text)
     text = re.sub(r"\bkon\s+sole\b", "konsole", text)
-    return text.rstrip(".?!,").strip()
+    text = re.sub(r"\bnew\s+tap\b", "new tab", text)
+    text = re.sub(r"\bclose\s+tap\b", "close tab", text)
+    text = re.sub(r"\bthis\s+tap\b", "this tab", text)
+    text = re.sub(r"\bcurrent\s+tap\b", "current tab", text)
+    text = re.sub(r"\bnext\s+tap\b", "next tab", text)
+
+    # Strip trailing punctuation
+    text = text.rstrip(".?!,").strip()
+
+    # Strip conversational prefixes ("can you", "please", "could you", etc.)
+    cleaned = re.sub(CONVERSATIONAL_PREFIXES, "", text).strip()
+    return cleaned
+
+
+def parse_youtube_play(text: str) -> tuple[str | None, str | None]:
+    """
+    Detects commands intended to play a video directly on YouTube.
+    Returns:
+        ('YOUTUBE_FIRST_RESULT', None) for 'open the first youtube result'
+        ('YOUTUBE_PLAY', query) for 'play ... on youtube'
+        (None, None) if not a play command.
+    """
+    cleaned = normalize_spoken_text(text)
+
+    # 1. "Open the first YouTube result"
+    first_result_phrases = (
+        "open the first youtube result", "open first youtube result",
+        "open the first result", "open first result",
+        "play the first youtube result", "play first youtube result",
+        "play the first result", "play first result"
+    )
+    if cleaned in first_result_phrases:
+        return "YOUTUBE_FIRST_RESULT", None
+
+    # 2. "Play <query> on/in YouTube" or "Play on YouTube <query>"
+    m = re.match(r"^play\s+(.+?)(?:\s+(?:on|in)\s+youtube)?$", cleaned)
+    if m:
+        query = m.group(1).strip()
+        # Avoid matching generic non-play phrases
+        if query:
+            return "YOUTUBE_PLAY", query
+
+    m = re.match(r"^play\s+(?:on|in)\s+youtube\s+(.+)$", cleaned)
+    if m:
+        query = m.group(1).strip()
+        if query:
+            return "YOUTUBE_PLAY", query
+
+    return None, None
 
 
 def parse_search_command(text: str) -> tuple[str | None, str | None]:
@@ -59,7 +116,9 @@ def parse_type_command(text: str) -> tuple[str | None, bool]:
     Returns:
         (text_to_type, press_enter) if recognized as a typing command, else (None, False).
     """
-    m = re.match(r"^(?:please\s+)?type\s+(.+)$", text.strip(), re.IGNORECASE)
+    # Use raw text (lowercased) with conversational prefix stripped
+    text_clean = re.sub(CONVERSATIONAL_PREFIXES, "", text.strip(), flags=re.IGNORECASE).strip()
+    m = re.match(r"^(?:please\s+)?type\s+(.+)$", text_clean, re.IGNORECASE)
     if not m:
         return None, False
 
@@ -107,27 +166,34 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     ):
         return "REQUEST_CONFIRMATION", {"action": "close_tab"}
 
-    # 4. Web search intent
+    # 4. YouTube Direct Video Playback (Play ... on YouTube, Open first result)
+    play_intent, play_query = parse_youtube_play(clean_text)
+    if play_intent == "YOUTUBE_FIRST_RESULT":
+        return "YOUTUBE_FIRST_RESULT", {}
+    if play_intent == "YOUTUBE_PLAY":
+        return "YOUTUBE_PLAY", {"query": play_query}
+
+    # 5. Web search intent (Google or YouTube search results page)
     engine, query = parse_search_command(clean_text)
     if engine:
         return "BROWSER_SEARCH", {"engine": engine, "query": query}
 
-    # 5. Typing intent
+    # 6. Typing intent
     type_content, press_enter = parse_type_command(text)
     if type_content is not None:
         return "TYPE_TEXT", {"content": type_content, "press_enter": press_enter}
 
-    # 6. Browser navigation actions
+    # 7. Browser navigation actions
     if clean_text in ("switch to the next tab", "next tab", "switch tab", "switch to next tab"):
         return "BROWSER_ACTION", {"action": "next_tab"}
-    if clean_text in ("go back", "back in browser", "browser back", "previous page"):
+    if clean_text in ("go back", "back in browser", "browser back", "previous page", "back"):
         return "BROWSER_ACTION", {"action": "back"}
-    if clean_text in ("go forward", "forward in browser", "browser forward", "next page"):
+    if clean_text in ("go forward", "forward in browser", "browser forward", "next page", "forward"):
         return "BROWSER_ACTION", {"action": "forward"}
     if clean_text in ("refresh the page", "refresh page", "refresh", "reload the page", "reload page", "reload"):
         return "BROWSER_ACTION", {"action": "refresh"}
 
-    # 7. Desktop core actions
+    # 8. Desktop core actions (New tab, windows, applications)
     firefox_tab_triggers = (
         "open another tab in firefox", "open a new tab in firefox", "open new tab in firefox",
         "open another tab", "open a new tab", "open new tab", "another tab in firefox",
@@ -156,5 +222,5 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     if any(trigger in clean_text for trigger in ("open youtube", "launch youtube", "start youtube")):
         return "DESKTOP_ACTION", {"action": "open_youtube"}
 
-    # 8. Unrecognized speech falls back to Ollama
+    # 9. Unrecognized speech falls back to Ollama
     return "OLLAMA_QUERY", {"prompt": clean_text}

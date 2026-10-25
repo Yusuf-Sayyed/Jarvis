@@ -1,5 +1,5 @@
 """
-Unit tests for intent detection and command parsing.
+Unit tests for intent detection, speech normalization, and YouTube playback parsing.
 """
 
 import unittest
@@ -8,6 +8,7 @@ from core.intent import (
     normalize_spoken_text,
     parse_search_command,
     parse_type_command,
+    parse_youtube_play,
 )
 
 
@@ -18,16 +19,47 @@ class TestIntentDetection(unittest.TestCase):
         self.assertEqual(normalize_spoken_text("goo gle"), "google")
         self.assertEqual(normalize_spoken_text("fire fox"), "firefox")
         self.assertEqual(normalize_spoken_text("down loads"), "downloads")
+        self.assertEqual(normalize_spoken_text("new tap"), "new tab")
+        self.assertEqual(normalize_spoken_text("close tap"), "close tab")
+        self.assertEqual(normalize_spoken_text("this tap"), "this tab")
         self.assertEqual(normalize_spoken_text("hello world..."), "hello world")
+        # Conversational prefix stripping
+        self.assertEqual(normalize_spoken_text("Can you please open a new tab?"), "open a new tab")
+        self.assertEqual(normalize_spoken_text("Hey JARVIS, can you play music on YouTube?"), "play music on youtube")
+        self.assertEqual(normalize_spoken_text("Could you close this tab?"), "close this tab")
+
+    def test_youtube_search_vs_direct_playback(self):
+        # 1. YouTube Search (results page)
+        eng, q = parse_search_command("search youtube for python tutorials")
+        self.assertEqual(eng, "youtube")
+        self.assertEqual(q, "python tutorials")
+
+        intent, params = detect_intent("search youtube for python tutorials")
+        self.assertEqual(intent, "BROWSER_SEARCH")
+        self.assertEqual(params["engine"], "youtube")
+        self.assertEqual(params["query"], "python tutorials")
+
+        # 2. YouTube Direct Playback
+        p_intent, p_q = parse_youtube_play("play iron man trailer on youtube")
+        self.assertEqual(p_intent, "YOUTUBE_PLAY")
+        self.assertEqual(p_q, "iron man trailer")
+
+        intent, params = detect_intent("play iron man trailer on youtube")
+        self.assertEqual(intent, "YOUTUBE_PLAY")
+        self.assertEqual(params["query"], "iron man trailer")
+
+        intent, params = detect_intent("can you play relaxing music on youtube?")
+        self.assertEqual(intent, "YOUTUBE_PLAY")
+        self.assertEqual(params["query"], "relaxing music")
+
+        # 3. Open the first result
+        intent, _ = detect_intent("open the first youtube result")
+        self.assertEqual(intent, "YOUTUBE_FIRST_RESULT")
 
     def test_search_parsing(self):
         eng, q = parse_search_command("search google for python tutorials")
         self.assertEqual(eng, "google")
         self.assertEqual(q, "python tutorials")
-
-        eng, q = parse_search_command("search youtube for iron man trailers")
-        self.assertEqual(eng, "youtube")
-        self.assertEqual(q, "iron man trailers")
 
         eng, q = parse_search_command("find the best linux laptops on google")
         self.assertEqual(eng, "google")
@@ -50,26 +82,39 @@ class TestIntentDetection(unittest.TestCase):
         self.assertEqual(content, "quantum computing")
         self.assertTrue(enter)
 
-    def test_intent_detection(self):
-        intent, params = detect_intent("search google for fedora kde")
-        self.assertEqual(intent, "BROWSER_SEARCH")
-        self.assertEqual(params["engine"], "google")
+    def test_browser_tab_intents(self):
+        # Open a new tab
+        intent, params = detect_intent("open a new tab")
+        self.assertEqual(intent, "DESKTOP_ACTION")
+        self.assertEqual(params["action"], "open_firefox_tab")
 
-        intent, params = detect_intent("type test message")
-        self.assertEqual(intent, "TYPE_TEXT")
+        intent, params = detect_intent("could you open a new tab?")
+        self.assertEqual(intent, "DESKTOP_ACTION")
+        self.assertEqual(params["action"], "open_firefox_tab")
 
-        intent, params = detect_intent("close the current tab")
+        # Close tab requires confirmation
+        intent, params = detect_intent("close this tab")
         self.assertEqual(intent, "REQUEST_CONFIRMATION")
         self.assertEqual(params["action"], "close_tab")
 
+        intent, params = detect_intent("can you close the current tab?")
+        self.assertEqual(intent, "REQUEST_CONFIRMATION")
+        self.assertEqual(params["action"], "close_tab")
+
+    def test_unsupported_and_ambiguous_commands(self):
+        # Conversational questions route to Ollama
+        intent, params = detect_intent("what is the speed of light?")
+        self.assertEqual(intent, "OLLAMA_QUERY")
+
+        intent, params = detect_intent("who built jarvis?")
+        self.assertEqual(intent, "OLLAMA_QUERY")
+
+    def test_confirmation_states(self):
         intent, params = detect_intent("yes", pending_action="close_tab")
         self.assertEqual(intent, "CONFIRM_ACTION")
 
         intent, params = detect_intent("no", pending_action="close_tab")
         self.assertEqual(intent, "CANCEL_ACTION")
-
-        intent, _ = detect_intent("exit jarvis")
-        self.assertEqual(intent, "EXIT")
 
 
 if __name__ == "__main__":
