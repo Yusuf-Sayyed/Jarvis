@@ -49,6 +49,22 @@ class TestRouter(unittest.TestCase):
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
 
+    def test_search_and_play_prompts(self):
+        # 1. Play prompt when title is missing
+        should_continue, pending = route_command("play a video on youtube")
+        self.assertTrue(should_continue)
+        self.assertEqual(pending, "youtube_play")
+
+        # 2. Search prompt when query is missing
+        should_continue, pending = route_command("search youtube")
+        self.assertTrue(should_continue)
+        self.assertEqual(pending, "search_youtube")
+
+        # 3. Unclear speech does not crash or exit
+        should_continue, pending = route_command("um")
+        self.assertTrue(should_continue)
+        self.assertIsNone(pending)
+
 
 if __name__ == "__main__":
     unittest.main()

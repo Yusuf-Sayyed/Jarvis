@@ -11,7 +11,7 @@ from core.listener import (
     CHUNK_SIZE,
     check_microphone_status,
     init_audio_stream,
-    init_speech_model,
+    init_speech_engine,
 )
 from core.router import route_command
 from core.wake_word import (
@@ -33,6 +33,7 @@ def print_standby_status():
     print("   Say 'Hey JARVIS' to activate a 5-minute session.")
     print("   Available in active session:")
     print("     - Searches: 'Search Google for...', 'Search YouTube for...'")
+    print("     - YouTube:  'Play [title] on YouTube', 'Play a video on YouTube'")
     print("     - Typing:   'Type [text]', 'Type [text] and press Enter'")
     print("     - Browser:  'Open a new tab', 'Switch to next tab',")
     print("                 'Go back', 'Go forward', 'Refresh the page',")
@@ -46,8 +47,8 @@ def print_standby_status():
 def main():
     print_banner()
 
-    # 1. Initialize Vosk model and Kaldi recognizer
-    model, recognizer = init_speech_model()
+    # 1. Initialize speech recognition engine (Whisper with VAD, or Vosk fallback)
+    speech_engine = init_speech_engine()
 
     # 2. Check microphone mute status
     check_microphone_status()
@@ -65,7 +66,7 @@ def main():
             # Check 5-minute inactivity timeout
             if session.is_active and session.is_expired():
                 session.deactivate()
-                print(f"\r{' ' * 70}\r", end="", flush=True)
+                print("\033[2K\r", end="", flush=True)
                 print("\n" + "=" * 60)
                 print("[STANDBY] 5-minute session expired due to inactivity.")
                 print("          Say 'Hey JARVIS' to wake me.")
@@ -79,77 +80,69 @@ def main():
             if len(data) == 0:
                 continue
 
-            if recognizer.AcceptWaveform(data):
-                result = json.loads(recognizer.Result())
-                spoken_text = result.get("text", "").strip()
-                if spoken_text:
-                    # Clear live partial line
-                    print(f"\r{' ' * 70}\r", end="", flush=True)
+            rem_str = format_time_remaining(session.remaining_seconds()) if session.is_active else ""
+            spoken_text = speech_engine.process_audio(
+                data, session_active=session.is_active, time_remaining_str=rem_str
+            )
 
-                    # Global exit commands
-                    clean = normalize_spoken_text(spoken_text)
-                    if any(clean == cmd or clean.startswith(cmd) for cmd in EXIT_COMMANDS):
-                        print(f"\n[Heard] \"{spoken_text}\"")
-                        print("[Intent: EXIT]")
-                        print("[JARVIS] Goodbye, Sir. Systems powering down.")
-                        break
+            if spoken_text:
+                print("\033[2K\r", end="", flush=True)
 
-                    has_wake, remaining_command = extract_wake_command(spoken_text)
+                # Global exit commands
+                clean = normalize_spoken_text(spoken_text)
+                if any(clean == cmd or clean.startswith(cmd) for cmd in EXIT_COMMANDS):
+                    print(f"\n[Heard] \"{spoken_text}\"")
+                    print("[Intent: EXIT]")
+                    print("[JARVIS] Goodbye, Sir. Systems powering down.")
+                    break
 
-                    if not session.is_active:
-                        # --- STANDBY MODE ---
-                        if has_wake:
-                            session.activate()
-                            print("\n" + "=" * 60)
-                            print("[ACTIVE] \"At your service, Sir. Active session started (5 minutes).\"")
-                            print("         Listening for commands or questions without the wake word.")
-                            print("=" * 60)
+                has_wake, remaining_command = extract_wake_command(spoken_text)
 
-                            if remaining_command:
-                                should_continue, session.pending_action = route_command(
-                                    remaining_command, session.pending_action
-                                )
-                                session.reset_timer()
-                                remaining_str = format_time_remaining(session.remaining_seconds())
-                                print(f"[ACTIVE | {remaining_str} remaining]")
-                                print("-" * 60)
-                                if not should_continue:
-                                    break
-                            else:
-                                print("-" * 60)
-                        else:
-                            print(f"[STANDBY] Heard \"{spoken_text}\" (Standing by. Say 'Hey JARVIS' to wake me).")
+                if not session.is_active:
+                    # --- STANDBY MODE ---
+                    if has_wake:
+                        session.activate()
+                        print("\n" + "=" * 60)
+                        print("[ACTIVE] \"At your service, Sir. Active session started (5 minutes).\"")
+                        print("         Listening for commands or questions without the wake word.")
+                        print("=" * 60)
 
-                    else:
-                        # --- ACTIVE MODE ---
-                        cmd_to_run = remaining_command if has_wake else spoken_text
-
-                        if not cmd_to_run and has_wake:
+                        if remaining_command:
+                            print(f"\n[Heard] \"{remaining_command}\"")
+                            should_continue, session.pending_action = route_command(
+                                remaining_command, session.pending_action
+                            )
                             session.reset_timer()
-                            print(f"\n[ACTIVE] Timer reset. 5 minutes remaining, Sir.")
+                            remaining_str = format_time_remaining(session.remaining_seconds())
+                            print(f"[ACTIVE | {remaining_str} remaining]")
                             print("-" * 60)
-                            continue
-
-                        should_continue, session.pending_action = route_command(
-                            cmd_to_run, session.pending_action
-                        )
-                        session.reset_timer()
-                        remaining_str = format_time_remaining(session.remaining_seconds())
-                        print(f"[ACTIVE | {remaining_str} remaining]")
-                        print("-" * 60)
-                        if not should_continue:
-                            break
-
-            else:
-                # Live feedback
-                partial_data = json.loads(recognizer.PartialResult())
-                partial_text = partial_data.get("partial", "").strip()
-                if partial_text:
-                    if session.is_active:
-                        remaining_str = format_time_remaining(session.remaining_seconds())
-                        print(f"\r[ACTIVE | {remaining_str} left] 🎤 Hearing: \"{partial_text}\"...", end="", flush=True)
+                            if not should_continue:
+                                break
+                        else:
+                            print("-" * 60)
                     else:
-                        print(f"\r[STANDBY | Say 'Hey JARVIS'] 🎤 Hearing: \"{partial_text}\"...", end="", flush=True)
+                        print(f"[STANDBY] Heard \"{spoken_text}\" (Standing by. Say 'Hey JARVIS' to wake me).")
+
+                else:
+                    # --- ACTIVE MODE ---
+                    cmd_to_run = remaining_command if has_wake else spoken_text
+
+                    if not cmd_to_run and has_wake:
+                        session.reset_timer()
+                        print(f"\n[ACTIVE] Timer reset. 5 minutes remaining, Sir.")
+                        print("-" * 60)
+                        continue
+
+                    print(f"\n[Heard] \"{cmd_to_run}\"")
+                    should_continue, session.pending_action = route_command(
+                        cmd_to_run, session.pending_action
+                    )
+                    session.reset_timer()
+                    remaining_str = format_time_remaining(session.remaining_seconds())
+                    print(f"[ACTIVE | {remaining_str} remaining]")
+                    print("-" * 60)
+                    if not should_continue:
+                        break
 
     except KeyboardInterrupt:
         print("\n[JARVIS] Stopped by user (Ctrl+C). Goodbye, Sir!")

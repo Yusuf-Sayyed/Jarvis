@@ -6,11 +6,30 @@ from pathlib import Path
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
-MODEL_DIR = BASE_DIR / "vosk-model-small-en-us-0.15"
+
+# Speech Recognition Engine: "whisper" or "vosk"
+STT_ENGINE = "whisper"
+
+# Whisper STT Settings (High accuracy, local offline transcription)
+WHISPER_MODEL_NAME = "base.en"
+WHISPER_COMPUTE_TYPE = "int8"
+WHISPER_DEVICE = "cpu"
+WHISPER_MODEL_DIR = BASE_DIR / "models" / "whisper"
+
+# Vosk Rollback / Fallback Paths (Preserved for 1-click rollback)
+MODEL_DIR = BASE_DIR / "models" / "vosk-model-en-us-0.22-lgraph"
+FALLBACK_MODEL_DIR = BASE_DIR / "vosk-model-small-en-us-0.15"
 
 # Audio Settings
 SAMPLE_RATE = 16000
-CHUNK_SIZE = 2000  # 125ms audio chunks for lower latency and smoother recognition
+CHUNK_SIZE = 2048  # 128ms audio chunks at 16kHz (4x 512 samples for neural VAD)
+
+# Voice Activity Detection (VAD) & Endpoint Detection
+VAD_SPEECH_THRESHOLD = 0.50        # Neural Silero VAD speech probability threshold
+VAD_SILENCE_TIMEOUT_SECONDS = 0.7  # 700ms silence to finalize speech utterance
+PRE_SPEECH_BUFFER_CHUNKS = 3       # ~384ms pre-speech audio ring buffer to avoid clipping speech start
+MIN_UTTERANCE_CHUNKS = 3           # Discard transient noises shorter than ~384ms
+MAX_UTTERANCE_SECONDS = 15.0       # Max speech buffer length before forcing transcription
 
 # Wake-Word & Session Timing
 SESSION_TIMEOUT_SECONDS = 300  # 5 minutes active session

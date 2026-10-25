@@ -1,6 +1,7 @@
 """
 Speech normalization and intent detection for voice commands.
-Supports conversational lead-ins, phonetic correction, and YouTube direct playback.
+Supports conversational lead-ins, phonetic correction, YouTube direct playback,
+browser search variations, and low-confidence speech guards.
 """
 
 import re
@@ -8,13 +9,17 @@ from core.config import EXIT_COMMANDS
 
 CONVERSATIONAL_PREFIXES = (
     r"^(?:(?:hey|hi|hello|ok|okay)?\s*jarvis\s*,?\s*)?"
-    r"(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+|will\s+you\s+|i\s+want\s+you\s+to\s+|can\s+we\s+)+"
+    r"(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+|will\s+you\s+|i\s+want\s+you\s+to\s+|can\s+we\s+|just\s+)+"
 )
+
+UNCLEAR_NOISE = {
+    "um", "uh", "ah", "the", "a", "an", "huh", "oh", "hmm", "and", "or", "so", "to"
+}
 
 
 def normalize_spoken_text(text: str) -> str:
     """
-    Normalizes common Vosk speech-recognition acoustic splits, phonetic confusions,
+    Normalizes speech-recognition acoustic splits, phonetic confusions,
     conversational prefixes, and trailing punctuation.
     """
     text = text.lower().strip()
@@ -39,11 +44,30 @@ def normalize_spoken_text(text: str) -> str:
     return cleaned
 
 
+def sanitize_search_query(query: str) -> str:
+    """Cleans speech bleed and trailing instructions from search queries."""
+    q = query.strip()
+    if q.startswith("for "):
+        q = q[4:].strip()
+    if q.startswith("about "):
+        q = q[6:].strip()
+
+    # Strip trailing noise like 'and play the first result', 'and play it', 'and open it'
+    q = re.sub(
+        r"\s+(?:and\s+)?(?:play\s+(?:the\s+)?(?:first\s+)?(?:video|result)?|play\s+it|open\s+(?:the\s+)?(?:first\s+)?result|open\s+it|please).*$",
+        "",
+        q,
+        flags=re.IGNORECASE,
+    ).strip()
+    return q.strip("\"' ")
+
+
 def parse_youtube_play(text: str) -> tuple[str | None, str | None]:
     """
     Detects commands intended to play a video directly on YouTube.
     Returns:
         ('YOUTUBE_FIRST_RESULT', None) for 'open the first youtube result'
+        ('YOUTUBE_PLAY_PROMPT', None) for 'play a video on youtube' without a specific title
         ('YOUTUBE_PLAY', query) for 'play ... on youtube'
         (None, None) if not a play command.
     """
@@ -59,17 +83,36 @@ def parse_youtube_play(text: str) -> tuple[str | None, str | None]:
     if cleaned in first_result_phrases:
         return "YOUTUBE_FIRST_RESULT", None
 
-    # 2. "Play <query> on/in YouTube" or "Play on YouTube <query>"
-    m = re.match(r"^play\s+(.+?)(?:\s+(?:on|in)\s+youtube)?$", cleaned)
+    # 2. Generic prompt phrases with no specific title
+    generic_play_phrases = (
+        "play a video on youtube", "play video on youtube", "play on youtube",
+        "play a video in youtube", "play something on youtube", "play video in youtube",
+        "play a video", "play video"
+    )
+    if cleaned in generic_play_phrases:
+        return "YOUTUBE_PLAY_PROMPT", None
+
+    # 3. "Play on/in YouTube <query>"
+    m = re.match(r"^play\s+(?:on|in)\s+youtube\s+(.+)$", cleaned)
     if m:
-        query = m.group(1).strip()
-        # Avoid matching generic non-play phrases
+        query = sanitize_search_query(m.group(1))
         if query:
             return "YOUTUBE_PLAY", query
 
-    m = re.match(r"^play\s+(?:on|in)\s+youtube\s+(.+)$", cleaned)
+    # 4. "Play <query> on/in YouTube"
+    m = re.match(r"^play\s+(.+?)\s+(?:on|in)\s+youtube$", cleaned)
     if m:
-        query = m.group(1).strip()
+        query = sanitize_search_query(m.group(1))
+        if query and query not in ("a video", "video", "something"):
+            return "YOUTUBE_PLAY", query
+        return "YOUTUBE_PLAY_PROMPT", None
+
+    # 5. "Play <query>" where query is not generic
+    m = re.match(r"^play\s+(.+)$", cleaned)
+    if m:
+        query = sanitize_search_query(m.group(1))
+        if query in ("a video", "video", "something", "music on youtube"):
+            return "YOUTUBE_PLAY_PROMPT", None
         if query:
             return "YOUTUBE_PLAY", query
 
@@ -84,28 +127,50 @@ def parse_search_command(text: str) -> tuple[str | None, str | None]:
     """
     cleaned = normalize_spoken_text(text)
 
-    # 1. "find <query> on google|youtube"
-    m = re.match(r"^(?:please\s+)?find\s+(.+?)\s+on\s+(google|youtube)$", cleaned)
-    if m:
-        return m.group(2).strip(), m.group(1).strip()
+    # Bare search requests with no query
+    if cleaned in ("search youtube", "search on youtube", "youtube search"):
+        return "youtube", ""
+    if cleaned in ("search google", "search on google", "google search"):
+        return "google", ""
 
-    # 2. "search google|youtube for <query>"
-    m = re.match(r"^(?:please\s+)?search\s+(google|youtube)\s+for\s+(.+)$", cleaned)
+    # 1. "search/find on/in google|youtube for <query>" or "search/find google|youtube for <query>"
+    m = re.match(r"^(?:please\s+)?(?:search|find)\s+(?:on\s+|in\s+)?(google|youtube)\s+for\s*(.*)$", cleaned)
     if m:
-        return m.group(1).strip(), m.group(2).strip()
+        return m.group(1).strip(), sanitize_search_query(m.group(2))
 
-    # 3. "open firefox and search for <query>", "open a new tab and search for <query>", or "search for <query>"
-    m = re.match(r"^(?:open\s+(?:firefox|a\s+new\s+tab)\s+and\s+)?search\s+(?:for\s+)?(.+)$", cleaned)
+    # 2. "search/find on/in google|youtube <query>" or "search/find google|youtube <query>"
+    m = re.match(r"^(?:please\s+)?(?:search|find)\s+(?:on\s+|in\s+)?(google|youtube)\s+(.+)$", cleaned)
     if m:
-        query = m.group(1).strip()
+        return m.group(1).strip(), sanitize_search_query(m.group(2))
+
+    # 3. "search/find <query> on/in google|youtube" or "search/find for <query> on/in google|youtube"
+    m = re.match(r"^(?:please\s+)?(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+(google|youtube)$", cleaned)
+    if m:
+        return m.group(2).strip(), sanitize_search_query(m.group(1))
+
+    # 4. "google|youtube search (for) <query>"
+    m = re.match(r"^(google|youtube)\s+search\s+(?:for\s+)?(.*)$", cleaned)
+    if m:
+        return m.group(1).strip(), sanitize_search_query(m.group(2))
+
+    # 5. "open firefox/new tab and search for <query>", or generic "search for <query>"
+    m = re.match(r"^(?:open\s+(?:firefox|a\s+new\s+tab)\s+and\s+)?search\s+(?:for\s+)?(.*)$", cleaned)
+    if m:
+        raw_query = m.group(1).strip()
         engine = "google"
-        if " on youtube" in query:
-            query = query.replace(" on youtube", "").strip()
+        if re.search(r"\b(?:on|in)\s+youtube$", raw_query):
+            raw_query = re.sub(r"\b(?:on|in)\s+youtube$", "", raw_query).strip()
             engine = "youtube"
-        elif " on google" in query:
-            query = query.replace(" on google", "").strip()
+        elif re.search(r"\b(?:on|in)\s+google$", raw_query):
+            raw_query = re.sub(r"\b(?:on|in)\s+google$", "", raw_query).strip()
             engine = "google"
-        return engine, query
+        elif raw_query.startswith("on youtube ") or raw_query.startswith("in youtube "):
+            raw_query = re.sub(r"^(?:on|in)\s+youtube\s+", "", raw_query).strip()
+            engine = "youtube"
+        elif raw_query.startswith("on google ") or raw_query.startswith("in google "):
+            raw_query = re.sub(r"^(?:on|in)\s+google\s+", "", raw_query).strip()
+            engine = "google"
+        return engine, sanitize_search_query(raw_query)
 
     return None, None
 
@@ -116,7 +181,6 @@ def parse_type_command(text: str) -> tuple[str | None, bool]:
     Returns:
         (text_to_type, press_enter) if recognized as a typing command, else (None, False).
     """
-    # Use raw text (lowercased) with conversational prefix stripped
     text_clean = re.sub(CONVERSATIONAL_PREFIXES, "", text.strip(), flags=re.IGNORECASE).strip()
     m = re.match(r"^(?:please\s+)?type\s+(.+)$", text_clean, re.IGNORECASE)
     if not m:
@@ -148,12 +212,21 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     """
     clean_text = normalize_spoken_text(text)
 
-    # 1. Pending confirmation check
+    # 1. Pending confirmation and prompt responses
     if pending_action == "close_tab":
         if clean_text in ("yes", "confirm", "do it", "sure", "yeah", "yep", "close it"):
             return "CONFIRM_ACTION", {"action": "close_tab"}
         elif clean_text in ("no", "cancel", "stop", "abort", "don't", "dont"):
             return "CANCEL_ACTION", {"action": "close_tab"}
+
+    if pending_action == "youtube_play" and clean_text:
+        return "YOUTUBE_PLAY", {"query": clean_text}
+
+    if pending_action == "search_google" and clean_text:
+        return "BROWSER_SEARCH", {"engine": "google", "query": clean_text}
+
+    if pending_action == "search_youtube" and clean_text:
+        return "BROWSER_SEARCH", {"engine": "youtube", "query": clean_text}
 
     # 2. Exit commands
     if any(clean_text == cmd or clean_text.startswith(cmd) for cmd in EXIT_COMMANDS):
@@ -166,16 +239,20 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     ):
         return "REQUEST_CONFIRMATION", {"action": "close_tab"}
 
-    # 4. YouTube Direct Video Playback (Play ... on YouTube, Open first result)
+    # 4. YouTube Direct Video Playback (Play ... on YouTube, Open first result, Prompt)
     play_intent, play_query = parse_youtube_play(clean_text)
     if play_intent == "YOUTUBE_FIRST_RESULT":
         return "YOUTUBE_FIRST_RESULT", {}
+    if play_intent == "YOUTUBE_PLAY_PROMPT":
+        return "YOUTUBE_PLAY_PROMPT", {}
     if play_intent == "YOUTUBE_PLAY":
         return "YOUTUBE_PLAY", {"query": play_query}
 
     # 5. Web search intent (Google or YouTube search results page)
     engine, query = parse_search_command(clean_text)
-    if engine:
+    if engine is not None:
+        if not query:
+            return "SEARCH_PROMPT", {"engine": engine}
         return "BROWSER_SEARCH", {"engine": engine, "query": query}
 
     # 6. Typing intent
@@ -222,5 +299,18 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     if any(trigger in clean_text for trigger in ("open youtube", "launch youtube", "start youtube")):
         return "DESKTOP_ACTION", {"action": "open_youtube"}
 
-    # 9. Unrecognized speech falls back to Ollama
-    return "OLLAMA_QUERY", {"prompt": clean_text}
+    # 9. Low-confidence / Unclear speech filtering (Prevents random noise from reaching Ollama)
+    if clean_text in UNCLEAR_NOISE or len(clean_text) <= 2:
+        return "UNCLEAR_SPEECH", {"raw": text}
+
+    # Questions or meaningful conversation statements route to Ollama
+    question_starters = (
+        "what", "how", "why", "who", "when", "where", "is", "are", "can", "could",
+        "would", "will", "tell", "explain", "do", "does", "which"
+    )
+    words = clean_text.split()
+    if len(words) >= 2 or any(clean_text.startswith(q) for q in question_starters):
+        return "OLLAMA_QUERY", {"prompt": clean_text}
+
+    return "UNCLEAR_SPEECH", {"raw": text}
+

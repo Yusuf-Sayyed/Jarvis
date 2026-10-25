@@ -56,18 +56,64 @@ class TestIntentDetection(unittest.TestCase):
         intent, _ = detect_intent("open the first youtube result")
         self.assertEqual(intent, "YOUTUBE_FIRST_RESULT")
 
+        # 4. Play video prompt when no title is given
+        intent, _ = detect_intent("play a video on youtube")
+        self.assertEqual(intent, "YOUTUBE_PLAY_PROMPT")
+
+        intent, _ = detect_intent("play on youtube")
+        self.assertEqual(intent, "YOUTUBE_PLAY_PROMPT")
+
     def test_search_parsing(self):
+        # Direct search with 'for'
         eng, q = parse_search_command("search google for python tutorials")
         self.assertEqual(eng, "google")
         self.assertEqual(q, "python tutorials")
 
+        # 'search on google for...' and 'search on youtube for...'
+        eng, q = parse_search_command("search on youtube for iron man videos")
+        self.assertEqual(eng, "youtube")
+        self.assertEqual(q, "iron man videos")
+
+        eng, q = parse_search_command("search on google for python tutorials")
+        self.assertEqual(eng, "google")
+        self.assertEqual(q, "python tutorials")
+
+        # 'search for ... on youtube/google'
+        eng, q = parse_search_command("search for iron man videos on youtube")
+        self.assertEqual(eng, "youtube")
+        self.assertEqual(q, "iron man videos")
+
+        # Conversational prefix
+        eng, q = parse_search_command("can you search google for python tutorials")
+        self.assertEqual(eng, "google")
+        self.assertEqual(q, "python tutorials")
+
+        # Trailing speech bleed / noise removal
+        eng, q = parse_search_command("search for iron man videos and play the first result")
+        self.assertEqual(eng, "google")
+        self.assertEqual(q, "iron man videos")
+
+        # 'find ... on google/youtube'
         eng, q = parse_search_command("find the best linux laptops on google")
         self.assertEqual(eng, "google")
         self.assertEqual(q, "the best linux laptops")
 
+        eng, q = parse_search_command("find iron man trailers on youtube")
+        self.assertEqual(eng, "youtube")
+        self.assertEqual(q, "iron man trailers")
+
         eng, q = parse_search_command("open a new tab and search for python courses")
         self.assertEqual(eng, "google")
         self.assertEqual(q, "python courses")
+
+        # Search with no query
+        eng, q = parse_search_command("search youtube")
+        self.assertEqual(eng, "youtube")
+        self.assertEqual(q, "")
+
+        intent, params = detect_intent("search youtube")
+        self.assertEqual(intent, "SEARCH_PROMPT")
+        self.assertEqual(params["engine"], "youtube")
 
     def test_type_parsing(self):
         content, enter = parse_type_command("type hello world")
@@ -109,9 +155,33 @@ class TestIntentDetection(unittest.TestCase):
         intent, params = detect_intent("who built jarvis?")
         self.assertEqual(intent, "OLLAMA_QUERY")
 
+        # Unclear noise/fillers must NOT route to Ollama
+        intent, _ = detect_intent("um")
+        self.assertEqual(intent, "UNCLEAR_SPEECH")
+
+        intent, _ = detect_intent("the")
+        self.assertEqual(intent, "UNCLEAR_SPEECH")
+
+        intent, _ = detect_intent("a")
+        self.assertEqual(intent, "UNCLEAR_SPEECH")
+
     def test_confirmation_states(self):
         intent, params = detect_intent("yes", pending_action="close_tab")
         self.assertEqual(intent, "CONFIRM_ACTION")
+
+        intent, params = detect_intent("no", pending_action="close_tab")
+        self.assertEqual(intent, "CANCEL_ACTION")
+
+        # Follow-up for youtube play prompt
+        intent, params = detect_intent("iron man trailer", pending_action="youtube_play")
+        self.assertEqual(intent, "YOUTUBE_PLAY")
+        self.assertEqual(params["query"], "iron man trailer")
+
+        # Follow-up for search prompt
+        intent, params = detect_intent("python tutorials", pending_action="search_google")
+        self.assertEqual(intent, "BROWSER_SEARCH")
+        self.assertEqual(params["engine"], "google")
+        self.assertEqual(params["query"], "python tutorials")
 
         intent, params = detect_intent("no", pending_action="close_tab")
         self.assertEqual(intent, "CANCEL_ACTION")

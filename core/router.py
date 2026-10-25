@@ -44,12 +44,17 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         return True, action
 
     # 4. YouTube Direct Video Playback
+    if intent == "YOUTUBE_PLAY_PROMPT":
+        print("[Intent: YOUTUBE_PLAY | Awaiting Query]")
+        print('\n[JARVIS] "What video or song would you like me to play on YouTube, Sir?"\n')
+        return True, "youtube_play"
+
     if intent == "YOUTUBE_PLAY":
         query = params.get("query", "")
         if not query:
             print("[Intent: YOUTUBE_PLAY | Query Unclear]")
-            print("[JARVIS] \"Please state what video or song you would like to play, Sir.\"")
-            return True, None
+            print('\n[JARVIS] "Please state what video or song you would like to play, Sir."\n')
+            return True, "youtube_play"
 
         print(f"[Intent: YOUTUBE_PLAY | Query: \"{query}\"]")
         browser.play_youtube_video(query)
@@ -61,13 +66,19 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         return True, None
 
     # 5. Web Search Intent (Search results page)
+    if intent == "SEARCH_PROMPT":
+        engine = params.get("engine", "google")
+        print(f"[Intent: BROWSER_SEARCH | Engine: {engine.capitalize()} | Awaiting Query]")
+        print(f'\n[JARVIS] "What would you like me to search for on {engine.capitalize()}, Sir?"\n')
+        return True, f"search_{engine}"
+
     if intent == "BROWSER_SEARCH":
         engine = params.get("engine", "google")
         query = params.get("query", "")
         if not query:
-            print("[Intent: BROWSER_SEARCH | Query Unclear]")
-            print("[JARVIS] \"I could not identify the search query, Sir. Please say: 'Search Google for [your query]'.\"")
-            return True, None
+            print(f"[Intent: BROWSER_SEARCH | Engine: {engine.capitalize()} | Query Unclear]")
+            print(f'\n[JARVIS] "I could not identify the search query, Sir. Please say: \'Search {engine.capitalize()} for [your query]\'."\n')
+            return True, f"search_{engine}"
 
         print(f"[Intent: BROWSER_SEARCH | Engine: {engine.capitalize()} | Query: \"{query}\"]")
         browser.search_web(query, engine)
@@ -113,7 +124,13 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 print(f"[JARVIS Error] Failed to execute action '{action}': {e}")
         return True, None
 
-    # 9. Ollama Fallback
+    # 9. Low-confidence / Unclear speech handling
+    if intent == "UNCLEAR_SPEECH":
+        print("[Intent: UNCLEAR_SPEECH]")
+        print('\n[JARVIS] "I beg your pardon, Sir. Could you please repeat that?"\n')
+        return True, None
+
+    # 10. Ollama Fallback
     if intent == "OLLAMA_QUERY":
         prompt = params.get("prompt", text)
         ask_ollama(prompt)

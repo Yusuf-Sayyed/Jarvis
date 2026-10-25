@@ -1,12 +1,36 @@
 """
-Vosk speech recognition model and PyAudio microphone listener.
+Speech recognition model loader and PyAudio microphone listener.
+Supports high-accuracy offline Whisper with Voice Activity Detection (VAD)
+as well as a 1-click fallback to Vosk.
 """
 
+import collections
 import ctypes
 import json
 import subprocess
 import sys
-from core.config import CHUNK_SIZE, MODEL_DIR, SAMPLE_RATE
+import time
+from collections import deque
+from pathlib import Path
+
+import numpy as np
+
+from core.config import (
+    CHUNK_SIZE,
+    FALLBACK_MODEL_DIR,
+    MAX_UTTERANCE_SECONDS,
+    MIN_UTTERANCE_CHUNKS,
+    MODEL_DIR,
+    PRE_SPEECH_BUFFER_CHUNKS,
+    SAMPLE_RATE,
+    STT_ENGINE,
+    VAD_SILENCE_TIMEOUT_SECONDS,
+    VAD_SPEECH_THRESHOLD,
+    WHISPER_COMPUTE_TYPE,
+    WHISPER_DEVICE,
+    WHISPER_MODEL_DIR,
+    WHISPER_MODEL_NAME,
+)
 
 # Suppress ALSA noisy warnings on Linux during PyAudio initialization
 try:
@@ -24,10 +48,6 @@ except Exception:
     pass
 
 import pyaudio
-from vosk import KaldiRecognizer, Model, SetLogLevel
-
-# Suppress verbose Vosk Kaldi logging
-SetLogLevel(-1)
 
 
 def check_microphone_status() -> bool:
@@ -49,23 +69,216 @@ def check_microphone_status() -> bool:
     return True
 
 
-def init_speech_model() -> tuple[Model, KaldiRecognizer]:
-    """Loads the Vosk speech model and initializes KaldiRecognizer."""
-    if not MODEL_DIR.is_dir():
-        print(f"\n[Error] Vosk model directory not found at: '{MODEL_DIR.resolve()}'")
-        print("Please ensure 'vosk-model-small-en-us-0.15' is present in this directory.")
-        sys.exit(1)
+class SpeechRecognizer:
+    """
+    Unified offline speech recognizer supporting:
+      1. Whisper (faster-whisper) with pre-speech ring buffer and energy/silence VAD.
+      2. Vosk (Kaldi recognizer) as a rollback engine.
+    """
 
-    print(f"Loading speech model from '{MODEL_DIR}'...")
-    try:
-        model = Model(str(MODEL_DIR))
-    except Exception as e:
-        print(f"[Error] Failed to load Vosk model: {e}")
-        sys.exit(1)
+    def __init__(self, engine: str = STT_ENGINE):
+        self.engine = engine.lower()
+        self.whisper_model = None
+        self.vad_model = None
+        self.vosk_recognizer = None
 
-    recognizer = KaldiRecognizer(model, SAMPLE_RATE)
-    recognizer.SetWords(True)
-    return model, recognizer
+        # Whisper VAD / Utterance state
+        self.speech_active = False
+        self.speech_start_time = 0.0
+        self.silence_start_time = None
+        self.speech_frames: list[bytes] = []
+        self.pre_buffer = deque(maxlen=PRE_SPEECH_BUFFER_CHUNKS)
+        self.last_display_time = 0.0
+        self.last_partial_text = ""
+
+        if self.engine == "whisper":
+            self._init_whisper()
+        else:
+            self._init_vosk()
+
+    def _init_whisper(self):
+        """Loads faster-whisper offline model and neural VAD."""
+        try:
+            from faster_whisper import WhisperModel
+            from faster_whisper.vad import get_vad_model
+        except ImportError:
+            print("[Warning] 'faster-whisper' package not found. Falling back to Vosk.")
+            self.engine = "vosk"
+            self._init_vosk()
+            return
+
+        print(f"Loading Whisper speech model ('{WHISPER_MODEL_NAME}', compute={WHISPER_COMPUTE_TYPE})...")
+        try:
+            self.whisper_model = WhisperModel(
+                WHISPER_MODEL_NAME,
+                device=WHISPER_DEVICE,
+                compute_type=WHISPER_COMPUTE_TYPE,
+                download_root=str(WHISPER_MODEL_DIR),
+                cpu_threads=4,
+            )
+            print("Whisper model loaded.")
+        except Exception as e:
+            print(f"[Warning] Failed to initialize Whisper model: {e}")
+            print("Falling back to Vosk speech model...")
+            self.engine = "vosk"
+            self._init_vosk()
+            return
+
+        try:
+            self.vad_model = get_vad_model()
+            print("Neural Voice Activity Detector (Silero VAD) initialized.")
+        except Exception as e:
+            print(f"[Warning] Could not load Silero VAD: {e}. Using energy detection.")
+            self.vad_model = None
+
+    def _init_vosk(self):
+        """Loads Vosk Kaldi offline speech model."""
+        from vosk import KaldiRecognizer, Model, SetLogLevel
+        SetLogLevel(-1)
+
+        active_model_dir = MODEL_DIR
+        if not active_model_dir.is_dir():
+            print(f"\n[Warning] Vosk model not found at: '{active_model_dir.resolve()}'")
+            if FALLBACK_MODEL_DIR.is_dir():
+                print(f"Falling back to small model: '{FALLBACK_MODEL_DIR.resolve()}'")
+                active_model_dir = FALLBACK_MODEL_DIR
+            else:
+                print("[Error] No valid Vosk model directory found.")
+                sys.exit(1)
+
+        print(f"Loading Vosk speech model from '{active_model_dir}'...")
+        try:
+            model = Model(str(active_model_dir))
+            self.vosk_recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+            self.vosk_recognizer.SetWords(True)
+            print("Vosk model loaded and ready.")
+        except Exception as e:
+            print(f"[Error] Failed to load Vosk model: {e}")
+            sys.exit(1)
+
+    def process_audio(
+        self, data: bytes, session_active: bool = False, time_remaining_str: str = ""
+    ) -> str | None:
+        """
+        Processes an incoming audio frame from PyAudio.
+
+        Returns:
+            Completed spoken utterance string if speech has concluded, else None.
+        """
+        if self.engine == "whisper":
+            return self._process_whisper(data, session_active, time_remaining_str)
+        else:
+            return self._process_vosk(data, session_active, time_remaining_str)
+
+    def _process_whisper(
+        self, data: bytes, session_active: bool, time_remaining_str: str
+    ) -> str | None:
+        # Detect voice activity via neural Silero VAD (or energy fallback)
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        if self.vad_model is not None and len(samples) % 512 == 0:
+            vad_out = self.vad_model(samples)
+            is_speech = float(np.max(vad_out)) >= VAD_SPEECH_THRESHOLD
+        else:
+            rms = float(np.sqrt(np.mean(np.square(samples * 32768.0))))
+            is_speech = rms >= 2500
+
+        now = time.time()
+        tag = f"[ACTIVE | {time_remaining_str} left]" if session_active else "[STANDBY | Say 'Hey JARVIS']"
+
+        if not self.speech_active:
+            # Maintain pre-speech audio ring buffer to avoid clipping speech onset
+            self.pre_buffer.append(data)
+            if is_speech:
+                self.speech_active = True
+                self.speech_start_time = now
+                self.silence_start_time = None
+                self.speech_frames = list(self.pre_buffer)
+                self.speech_frames.append(data)
+                self.last_display_time = now
+                print(f"\033[2K\r{tag} 🎤 Listening...", end="", flush=True)
+            return None
+
+        # Currently accumulating speech
+        self.speech_frames.append(data)
+        elapsed = now - self.speech_start_time
+
+        if is_speech:
+            # Continued voice activity resets silence counter
+            self.silence_start_time = None
+            if now - self.last_display_time >= 0.35:
+                self.last_display_time = now
+                print(f"\033[2K\r{tag} 🎤 Listening ({elapsed:.1f}s)...", end="", flush=True)
+        else:
+            # Potential end of speech (silence chunk)
+            if self.silence_start_time is None:
+                self.silence_start_time = now
+
+        # Check if silence timeout reached or max utterance duration exceeded
+        silence_duration = (now - self.silence_start_time) if self.silence_start_time else 0.0
+        should_finalize = (
+            silence_duration >= VAD_SILENCE_TIMEOUT_SECONDS or elapsed >= MAX_UTTERANCE_SECONDS
+        )
+
+        if not should_finalize:
+            return None
+
+        # Finalize utterance
+        self.speech_active = False
+        print("\033[2K\r", end="", flush=True)
+
+        frames_to_transcribe = self.speech_frames
+        self.speech_frames = []
+
+        if len(frames_to_transcribe) < MIN_UTTERANCE_CHUNKS:
+            # Discard short transient clicks or coughs
+            return None
+
+        raw_pcm = b"".join(frames_to_transcribe)
+        audio_float = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+
+        try:
+            segments, _ = self.whisper_model.transcribe(
+                audio_float,
+                language="en",
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=400),
+                beam_size=3,
+            )
+            text = "".join(s.text for s in segments).strip()
+            return text if text else None
+        except Exception as e:
+            print(f"\n[Warning] Whisper transcription error: {e}")
+            return None
+
+    def _process_vosk(
+        self, data: bytes, session_active: bool, time_remaining_str: str
+    ) -> str | None:
+        tag = f"[ACTIVE | {time_remaining_str} left]" if session_active else "[STANDBY | Say 'Hey JARVIS']"
+
+        if self.vosk_recognizer.AcceptWaveform(data):
+            result = json.loads(self.vosk_recognizer.Result())
+            text = result.get("text", "").strip()
+            print("\033[2K\r", end="", flush=True)
+            self.last_partial_text = ""
+            return text if text else None
+        else:
+            partial_data = json.loads(self.vosk_recognizer.PartialResult())
+            partial_text = partial_data.get("partial", "").strip()
+            if partial_text and partial_text != self.last_partial_text:
+                self.last_partial_text = partial_text
+                print(f"\033[2K\r{tag} 🎤 Hearing: \"{partial_text}\"...", end="", flush=True)
+            return None
+
+
+def init_speech_engine() -> SpeechRecognizer:
+    """Initializes and returns the configured speech recognition engine."""
+    return SpeechRecognizer(STT_ENGINE)
+
+
+def init_speech_model() -> tuple[SpeechRecognizer, SpeechRecognizer]:
+    """Compatibility wrapper returning recognizer instance."""
+    engine = init_speech_engine()
+    return engine, engine
 
 
 def init_audio_stream() -> tuple[pyaudio.PyAudio, pyaudio.Stream]:
@@ -98,3 +311,4 @@ def init_audio_stream() -> tuple[pyaudio.PyAudio, pyaudio.Stream]:
         sys.exit(1)
 
     return p, stream
+
