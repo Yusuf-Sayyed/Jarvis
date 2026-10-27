@@ -34,7 +34,11 @@ MAX_UTTERANCE_SECONDS = 15.0       # Max speech buffer length before forcing tra
 # Wake-Word & Session Timing
 SESSION_TIMEOUT_SECONDS = 300  # 5 minutes active session
 WAKE_WORDS = ("hey jarvis", "hi jarvis", "hello jarvis", "jarvis", "ok jarvis", "okay jarvis")
-EXIT_COMMANDS = ("exit jarvis", "quit jarvis", "stop jarvis", "exit", "quit")
+EXIT_COMMANDS = (
+    "exit jarvis", "quit jarvis", "stop jarvis", "exit", "quit",
+    "goodbye jarvis", "goodbye", "bye jarvis", "bye", "see ya", "cya", "hello cya"
+)
+
 
 # Ollama Local LLM Settings
 OLLAMA_API_URL = "http://localhost:11434/api/generate"

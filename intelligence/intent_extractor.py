@@ -39,6 +39,7 @@ def _clean_input(text: str) -> str:
     cleaned = re.sub(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?jarvis\s*[,:]?\s*", "", cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(CONVERSATIONAL_PREFIXES, "", cleaned).strip()
     cleaned = re.sub(r"\b(?:lens\s*(?:5|five|fy|ify|i\s*fy|if\s*i)|lensi+fy)\b", "lensify", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\b(\w+)(?:[,\s!]+(?:\1\b))+", r"\1", cleaned, flags=re.IGNORECASE).strip()
     return cleaned.rstrip(".?!,").strip()
 
 
@@ -54,7 +55,7 @@ RE_STEP_SPLIT = re.compile(
 RE_TEACH_WORKFLOW = re.compile(
     r"^(?:when(?:ever)?\s+(?:i\s+say|i\s+tell\s+you\s+to|i\s+ask\s+you\s+to)|if\s+i\s+say)\s+"
     r"['\"]?(.+?)['\"]?\s*"
-    r"(?:,\s*|\s+(?=(?:open|launch|start|set|turn|take|mute|unmute)\b))"
+    r"(?:,\s*(?:then\s+)?|\s+(?:then\s+|,?\s*then\s+)|\s+(?=(?:open|launch|start|set|turn|take|mute|unmute)\b))"
     r"(.+)$",
     re.IGNORECASE,
 )
@@ -224,8 +225,8 @@ def extract_volume_intent(text: str) -> Optional[dict[str, Any]]:
     if any(k in cleaned for k in ("brightness", "timer", "alarm", "screen", "search", "youtube", "tab")):
         return None
 
-    # MUTE / UNMUTE
-    if re.match(rf"^unmute(?:\s+{VOL_FILLERS}{VOL_NOUN})?$", cleaned):
+    # MUTE / UNMUTE (matches "mute", "mute, mute", "mute mute", "mute mute mute", "silence", "be quiet", "quiet", etc.)
+    if re.match(rf"^(?:(?:unmute(?:[,!\s]+unmute)*)+)(?:\s+{VOL_FILLERS}(?:{VOL_NOUN}|it|this|audio))?$", cleaned):
         return {
             "intent": "unmute",
             "action": "mute_audio",
@@ -236,7 +237,7 @@ def extract_volume_intent(text: str) -> Optional[dict[str, Any]]:
             "clarification_reason": None,
         }
 
-    if re.match(rf"^mute(?:\s+{VOL_FILLERS}{VOL_NOUN})?$", cleaned):
+    if re.match(rf"^(?:(?:mute(?:[,!\s]+mute)*)+|silence|be\s+quiet|quiet)(?:\s+{VOL_FILLERS}(?:{VOL_NOUN}|it|this|audio))?$", cleaned):
         return {
             "intent": "mute",
             "action": "mute_audio",
@@ -498,6 +499,9 @@ def parse_teaching_request(clean_text: str) -> Optional[dict[str, Any]]:
     raw_trigger = m.group(1).strip()
     raw_actions = m.group(2).strip()
 
+    # Strip trailing "then" or punctuation from trigger if present
+    raw_trigger = re.sub(r"\s+then$", "", raw_trigger, flags=re.IGNORECASE).strip()
+
     trigger_clean = raw_trigger.strip("'\"").strip().rstrip(".?!,").strip().lower()
     if not trigger_clean:
         return None
@@ -540,6 +544,24 @@ def parse_teaching_request(clean_text: str) -> Optional[dict[str, Any]]:
         if act == "open_project":
             project = params.get("project")
             app_name = params.get("app") or "editor"
+
+            # Check if project is an anaphoric / pronoun reference (e.g. "that folder", "that", "folder", "it", "the project")
+            pronouns = ("that", "that folder", "the folder", "folder", "it", "this folder", "this", "the project", "that project")
+            if not project or project.lower().strip() in pronouns:
+                # 1. Check if trigger specifies a project (e.g. "open manage crew" -> "manage crew")
+                trig_cand = re.sub(
+                    r"^(?:open|launch|start(?:\s+working\s+on)?|work\s+on|code)\s+",
+                    "",
+                    trigger_clean,
+                    flags=re.IGNORECASE,
+                ).strip()
+                trig_path, _ = dir_resolver.resolve_project_directory(trig_cand)
+                if trig_path:
+                    project = trig_cand
+                elif shared_path:
+                    project = os.path.basename(shared_path)
+                elif self_recent := context.get_recent_target_path():
+                    project = os.path.basename(self_recent)
 
             target_path, candidates = dir_resolver.resolve_project_directory(project)
             if not target_path and len(candidates) > 1:
@@ -902,7 +924,7 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
         return {"action": "followup_switch_app", "params": {"app": new_app, "path": target_path}, "is_followup": True}
 
     # 6. Deterministic Project Entity Patterns (< 1ms)
-    m_in = re.match(r"^(?:open|launch|start)\s+(.+?)\s+in\s+(.+)$", clean_text, re.IGNORECASE)
+    m_in = re.match(r"^(?:open|launch|start)\s+(.+?)\s+(?:in|into)\s+(.+)$", clean_text, re.IGNORECASE)
     if m_in:
         p1 = m_in.group(1).rstrip(".?!,").strip()
         p2 = m_in.group(2).rstrip(".?!,").strip()

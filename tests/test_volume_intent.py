@@ -199,6 +199,19 @@ class TestVolumeRecognitionAndRouting(unittest.TestCase):
         route_command("Unmute.")
         mock_mute.assert_called_with(False)
 
+        # Urgent repeated mute commands
+        for phrase in ("Mute, Mute!", "mute mute", "mute, mute, mute", "Silence!", "Quiet!"):
+            mock_mute.reset_mock()
+            mock_mute.return_value = (True, "Audio muted.")
+            route_command(phrase)
+            mock_mute.assert_called_with(True)
+
+        # Urgent repeated unmute
+        mock_mute.reset_mock()
+        mock_mute.return_value = (True, "Audio unmuted (50%).")
+        route_command("Unmute, unmute!")
+        mock_mute.assert_called_with(False)
+
     @patch("intelligence.intent_extractor.query_ollama_volume_extraction")
     def test_ollama_not_called_for_deterministic_parsing(self, mock_ollama_vol):
         """Proves Ollama is NOT called for recognizable volume commands."""

@@ -64,48 +64,135 @@ def verify_browser_active() -> tuple[bool, str]:
     return False, "unknown"
 
 
+def _run_shortcut(desc: str, wtype_args: list[str], ydotool_args: list[str], xdotool_args: list[str]) -> bool:
+    """
+    Attempts to simulate a shortcut using available tools with return code verification.
+    Tries ydotool first, then wtype, then xdotool.
+    """
+    # 1. Try ydotool (Kernel uinput-level; works on all Wayland compositors including KDE)
+    if shutil.which("ydotool"):
+        try:
+            res = subprocess.run(
+                ["ydotool"] + ydotool_args,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0:
+                print(f"[JARVIS] {desc} (via ydotool)...")
+                return True
+        except Exception:
+            pass
+
+    # 2. Try wtype (only works on compositors supporting zwp_virtual_keyboard_v1)
+    if shutil.which("wtype"):
+        try:
+            res = subprocess.run(
+                ["wtype"] + wtype_args,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0:
+                print(f"[JARVIS] {desc} (via wtype)...")
+                return True
+        except Exception:
+            pass
+
+    # 3. Try xdotool (works on X11 / Xwayland)
+    if shutil.which("xdotool"):
+        try:
+            res = subprocess.run(
+                ["xdotool"] + xdotool_args,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0:
+                print(f"[JARVIS] {desc} (via xdotool)...")
+                return True
+        except Exception:
+            pass
+
+    # If all failed or none available, provide an honest, actionable error message
+    print(f"[JARVIS Error] Could not perform '{desc}'.")
+    print("               On Fedora KDE Plasma (Wayland), 'wtype' is not supported by KWin.")
+    print("               To enable tab closing and keyboard automation, please install ydotool:")
+    print("                 sudo dnf install ydotool")
+    print("                 sudo ydotoold &")
+    return False
+
+
 def type_text(content: str, press_enter: bool = False):
     """
-    Types content into the currently focused window using wtype (Wayland)
-    or xdotool/ydotool if available.
+    Types content into the currently focused window using ydotool, wtype, or xdotool.
     """
-    # 1. Native Wayland virtual keyboard (wtype)
-    if shutil.which("wtype"):
-        print(f"[JARVIS] Typing \"{content}\" via wtype...")
-        subprocess.run(["wtype", "--", content], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        if press_enter:
-            time.sleep(0.05)
-            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return
-
-    # 2. X11 / Xwayland fallback (xdotool)
-    if shutil.which("xdotool"):
-        print(f"[JARVIS] Typing \"{content}\" via xdotool...")
-        subprocess.run(["xdotool", "type", "--", content], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        if press_enter:
-            time.sleep(0.05)
-            subprocess.run(["xdotool", "key", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return
-
-    # 3. ydotool fallback
+    # 1. Try ydotool
     if shutil.which("ydotool"):
-        print(f"[JARVIS] Typing \"{content}\" via ydotool...")
-        subprocess.run(["ydotool", "type", "--", content], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        if press_enter:
-            time.sleep(0.05)
-            subprocess.run(["ydotool", "key", "28:1", "28:0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return
+        try:
+            res = subprocess.run(
+                ["ydotool", "type", "--", content],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0:
+                print(f"[JARVIS] Typing \"{content}\" via ydotool...")
+                if press_enter:
+                    time.sleep(0.05)
+                    subprocess.run(["ydotool", "key", "28:1", "28:0"], capture_output=True, check=False)
+                return
+        except Exception:
+            pass
 
-    # No typing tool detected
-    print("[JARVIS Error] Desktop keystroke typing requires 'wtype' on Fedora KDE Wayland.")
-    print("               To enable typing into fields, run: sudo dnf install wtype")
+    # 2. Try wtype
+    if shutil.which("wtype"):
+        try:
+            res = subprocess.run(
+                ["wtype", "--", content],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0:
+                print(f"[JARVIS] Typing \"{content}\" via wtype...")
+                if press_enter:
+                    time.sleep(0.05)
+                    subprocess.run(["wtype", "-k", "Return"], capture_output=True, check=False)
+                return
+        except Exception:
+            pass
+
+    # 3. Try xdotool
+    if shutil.which("xdotool"):
+        try:
+            res = subprocess.run(
+                ["xdotool", "type", "--", content],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0:
+                print(f"[JARVIS] Typing \"{content}\" via xdotool...")
+                if press_enter:
+                    time.sleep(0.05)
+                    subprocess.run(["xdotool", "key", "Return"], capture_output=True, check=False)
+                return
+        except Exception:
+            pass
+
+    print("[JARVIS Error] Could not simulate typing: No working keyboard automation tool found.")
+    print("               On Fedora KDE Plasma (Wayland), 'wtype' is not supported by KWin.")
+    print("               To enable typing into fields, please install ydotool:")
+    print("                 sudo dnf install ydotool")
+    print("                 sudo ydotoold &")
 
 
 def close_browser_tab() -> bool:
     """
     Closes the current browser tab using Ctrl+W after verifying:
-    1. An automation tool (wtype/xdotool) is available.
-    2. The active window is not another application (e.g. terminal or IDE).
+    1. The active window is a web browser.
+    2. A working keyboard automation tool (ydotool/wtype/xdotool) is available.
     """
     # 1. Verify active window is a browser
     is_browser, win_id = verify_browser_active()
@@ -114,46 +201,42 @@ def close_browser_tab() -> bool:
         print("                 Tab closure aborted to prevent closing another application.")
         return False
 
-    # 2. Check for automation tool
-    if shutil.which("wtype"):
-        print("[JARVIS] Closing current browser tab via Ctrl+W (wtype)...")
-        subprocess.run(["wtype", "-M", "ctrl", "-k", "w", "-m", "ctrl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return True
-
-    if shutil.which("xdotool"):
-        print("[JARVIS] Closing current browser tab via Ctrl+W (xdotool)...")
-        subprocess.run(["xdotool", "key", "ctrl+w"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return True
-
-    print("[JARVIS Error] Closing tab via Ctrl+W requires 'wtype' on Fedora KDE Wayland.")
-    print("               To enable keyboard shortcuts, please run: sudo dnf install wtype")
-    return False
+    return _run_shortcut(
+        desc="Closing current browser tab via Ctrl+W",
+        wtype_args=["-M", "ctrl", "-k", "w", "-m", "ctrl"],
+        ydotool_args=["key", "29:1", "17:1", "17:0", "29:0"],
+        xdotool_args=["key", "ctrl+w"],
+    )
 
 
 def send_browser_shortcut(action_name: str) -> bool:
-    """Sends browser navigation keystrokes via wtype or xdotool."""
+    """Sends browser navigation keystrokes via ydotool, wtype, or xdotool."""
     if action_name == "close_tab":
         return close_browser_tab()
 
     shortcuts = {
         "next_tab": {
-            "wtype": [["wtype", "-M", "ctrl", "-k", "Tab", "-m", "ctrl"]],
-            "xdotool": [["xdotool", "key", "ctrl+Tab"]],
+            "wtype": ["-M", "ctrl", "-k", "Tab", "-m", "ctrl"],
+            "ydotool": ["key", "29:1", "15:1", "15:0", "29:0"],
+            "xdotool": ["key", "ctrl+Tab"],
             "desc": "Switching to next tab",
         },
         "back": {
-            "wtype": [["wtype", "-M", "alt", "-k", "Left", "-m", "alt"]],
-            "xdotool": [["xdotool", "key", "alt+Left"]],
+            "wtype": ["-M", "alt", "-k", "Left", "-m", "alt"],
+            "ydotool": ["key", "56:1", "105:1", "105:0", "56:0"],
+            "xdotool": ["key", "alt+Left"],
             "desc": "Navigating back",
         },
         "forward": {
-            "wtype": [["wtype", "-M", "alt", "-k", "Right", "-m", "alt"]],
-            "xdotool": [["xdotool", "key", "alt+Right"]],
+            "wtype": ["-M", "alt", "-k", "Right", "-m", "alt"],
+            "ydotool": ["key", "56:1", "106:1", "106:0", "56:0"],
+            "xdotool": ["key", "alt+Right"],
             "desc": "Navigating forward",
         },
         "refresh": {
-            "wtype": [["wtype", "-k", "F5"]],
-            "xdotool": [["xdotool", "key", "F5"]],
+            "wtype": ["-k", "F5"],
+            "ydotool": ["key", "63:1", "63:0"],
+            "xdotool": ["key", "F5"],
             "desc": "Refreshing page",
         },
     }
@@ -162,19 +245,10 @@ def send_browser_shortcut(action_name: str) -> bool:
         return False
 
     info = shortcuts[action_name]
+    return _run_shortcut(
+        desc=info["desc"],
+        wtype_args=info["wtype"],
+        ydotool_args=info["ydotool"],
+        xdotool_args=info["xdotool"],
+    )
 
-    if shutil.which("wtype"):
-        print(f"[JARVIS] {info['desc']} (via wtype)...")
-        for cmd in info["wtype"]:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return True
-
-    if shutil.which("xdotool"):
-        print(f"[JARVIS] {info['desc']} (via xdotool)...")
-        for cmd in info["xdotool"]:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        return True
-
-    print(f"[JARVIS Error] {info['desc']} requires 'wtype' on Fedora KDE Wayland.")
-    print("               To enable browser shortcuts, run: sudo dnf install wtype")
-    return False

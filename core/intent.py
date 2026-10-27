@@ -49,11 +49,11 @@ RE_MEDIA_STOP = re.compile(
     re.IGNORECASE,
 )
 RE_MEDIA_MUTE = re.compile(
-    r"^(?:mute)\s+(?:the\s+|this\s+)?(?:video|playback|media|movie|stream|player)(?:\s+audio)?$",
+    r"^(?:(?:mute(?:[,!\s]+mute)*)+|silence|be\s+quiet|quiet)\s+(?:the\s+|this\s+)?(?:video|playback|media|movie|stream|player)(?:\s+audio)?$",
     re.IGNORECASE,
 )
 RE_MEDIA_UNMUTE = re.compile(
-    r"^(?:unmute)\s+(?:the\s+|this\s+)?(?:video|playback|media|movie|stream|player)(?:\s+audio)?$",
+    r"^(?:unmute(?:[,!\s]+unmute)*)+\s+(?:the\s+|this\s+)?(?:video|playback|media|movie|stream|player)(?:\s+audio)?$",
     re.IGNORECASE,
 )
 RE_MEDIA_SEEK_FWD = re.compile(
@@ -138,6 +138,9 @@ def normalize_spoken_text(text: str) -> str:
     text = re.sub(r"\bcurrent\s+tap\b", "current tab", text)
     text = re.sub(r"\bnext\s+tap\b", "next tab", text)
     text = re.sub(r"\b(?:lens\s*(?:5|five|fy|ify|i\s*fy|if\s*i)|lensi+fy)\b", "lensify", text, flags=re.IGNORECASE)
+
+    # Collapse urgent repeated single words (e.g. "mute, mute!" -> "mute", "pause, pause" -> "pause", "stop, stop" -> "stop")
+    text = re.sub(r"\b(\w+)(?:[,\s!]+(?:\1\b))+", r"\1", text, flags=re.IGNORECASE)
 
     # Strip trailing punctuation
     text = text.rstrip(".?!,").strip()
@@ -424,7 +427,7 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
             return "MEDIA_CONTROL", {"action": act, "target": selected, **extra}
 
     # 2. Exit commands
-    if any(clean_text == cmd or clean_text.startswith(cmd) for cmd in EXIT_COMMANDS):
+    if any(clean_text == cmd or clean_text.startswith(cmd) or clean_text.endswith(cmd) for cmd in EXIT_COMMANDS):
         return "EXIT", {}
 
     # 3. Close current tab (requests confirmation)

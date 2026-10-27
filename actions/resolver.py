@@ -190,6 +190,8 @@ class DirectoryResolver:
             Path.home(),
         ]
 
+        clean_compact = clean_name.replace(" ", "").replace("-", "").replace("_", "")
+
         candidates = []
         for root in search_roots:
             if not root.is_dir():
@@ -202,7 +204,10 @@ class DirectoryResolver:
 
                 # Shallow scan of immediate subdirectories
                 for child in root.iterdir():
-                    if child.is_dir() and child.name.lower() == clean_name:
+                    if not child.is_dir():
+                        continue
+                    child_compact = child.name.lower().replace(" ", "").replace("-", "").replace("_", "")
+                    if child.name.lower() == clean_name or (clean_compact and child_compact == clean_compact):
                         c_str = str(child.resolve())
                         if c_str not in candidates:
                             candidates.append(c_str)

@@ -631,11 +631,19 @@ class TestWorkflowEngine(unittest.TestCase):
         step2 = intent2["params"]["steps"][0]
         self.assertEqual(step2["action"], "open_project")
         self.assertEqual(step2["params"]["project"], "lensify")
-        self.assertIn("Antigravity", step2["params"]["app"])
+        # 3. Pronoun reference 'that folder' and 'then' separator
+        intent3 = extract_smart_intent("When I say open manage crew then open that folder into editor.")
+        self.assertIsNotNone(intent3)
+        self.assertEqual(intent3["action"], "teach_workflow")
+        self.assertEqual(intent3["params"]["trigger"], "open manage crew")
+        step3 = intent3["params"]["steps"][0]
+        self.assertEqual(step3["action"], "open_project")
+        self.assertIn("Antigravity", step3["params"]["app"])
 
 
 if __name__ == "__main__":
     import json
     unittest.main()
+
 
 
