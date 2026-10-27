@@ -15,3 +15,6 @@ models/
 *.bak
 *.bak*
 
+
+# Compiled local binaries
+bin/
