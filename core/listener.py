@@ -156,15 +156,35 @@ class SpeechRecognizer:
             print(f"[Error] Failed to load Vosk model: {e}")
             sys.exit(1)
 
+    def reset_buffers(self):
+        """Clears speech audio buffers and pre-speech ring buffer."""
+        self.speech_frames.clear()
+        self.pre_buffer.clear()
+        self.speech_active = False
+        self.speech_start_time = 0.0
+        self.silence_start_time = None
+        self.last_partial_text = ""
+        if self.vosk_recognizer is not None:
+            try:
+                self.vosk_recognizer.Reset()
+            except Exception:
+                pass
+
     def process_audio(
         self, data: bytes, session_active: bool = False, time_remaining_str: str = ""
     ) -> str | None:
         """
         Processes an incoming audio frame from PyAudio.
+        Suppresses input during TTS playback and post-speech cooldown to prevent feedback.
 
         Returns:
             Completed spoken utterance string if speech has concluded, else None.
         """
+        from interfaces.speech import should_mute_mic
+        if should_mute_mic():
+            self.reset_buffers()
+            return None
+
         if self.engine == "whisper":
             return self._process_whisper(data, session_active, time_remaining_str)
         else:
@@ -241,8 +261,9 @@ class SpeechRecognizer:
                 audio_float,
                 language="en",
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=400),
+                vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=250),
                 beam_size=3,
+                condition_on_previous_text=False,
             )
             text = "".join(s.text for s in segments).strip()
             return text if text else None

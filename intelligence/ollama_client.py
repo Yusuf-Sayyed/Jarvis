@@ -3,6 +3,7 @@ Client for the local Ollama LLM service (llama3.2:3b).
 """
 
 import json
+from typing import Optional
 import urllib.error
 import urllib.request
 from core.config import JARVIS_SYSTEM_PROMPT, OLLAMA_API_URL, OLLAMA_MODEL
@@ -48,35 +49,51 @@ def is_knowledge_gap(text: str | None) -> bool:
     return any(p in lower for p in KNOWLEDGE_GAP_PHRASES)
 
 
-def get_system_prompt_with_memory() -> str:
+def get_system_prompt_with_memory(additional_context: Optional[list[str]] = None) -> str:
     """
-    Constructs the system prompt dynamically with remembered user preferences and identity facts.
+    Constructs the system prompt dynamically with remembered user preferences, identity facts,
+    and conversational memories from persistent SQLite storage.
     """
     try:
         from core.memory import get_memory_store
         memory = get_memory_store()
         prefs = memory.get_all_preferences()
+        user_memories = memory.list_all_memories()
     except Exception:
         prefs = {}
+        user_memories = []
 
     system = JARVIS_SYSTEM_PROMPT
-    if prefs:
-        system += "\n\nPersistent User Knowledge:"
-        if "user_name" in prefs:
-            system += f"\n- The user's name is {prefs['user_name']}. Address them warmly as 'Sir' or 'Mr. {prefs['user_name']}'."
-        if "location" in prefs:
-            system += f"\n- The user resides in {prefs['location']}."
-        if "age" in prefs:
-            system += f"\n- The user is {prefs['age']} years old."
-        if "occupation" in prefs:
-            system += f"\n- The user's occupation/role is {prefs['occupation']}."
-        for k, v in prefs.items():
-            if k not in ("user_name", "location", "age", "occupation"):
-                system += f"\n- {k.replace('_', ' ').title()}: {v}"
+    knowledge_lines = []
+
+    if prefs.get("user_name"):
+        knowledge_lines.append(f"The user's name is {prefs['user_name']}. Address them warmly as 'Sir' or 'Mr. {prefs['user_name']}'.")
+    if prefs.get("location"):
+        knowledge_lines.append(f"The user resides in {prefs['location']}.")
+    if prefs.get("age"):
+        knowledge_lines.append(f"The user is {prefs['age']} years old.")
+    if prefs.get("occupation"):
+        knowledge_lines.append(f"The user's occupation/role is {prefs['occupation']}.")
+
+    for m in user_memories:
+        top = m.get("topic", m.get("memory_key", "memory")).title()
+        cont = m.get("content", "")
+        line = f"{top}: {cont}"
+        if line not in knowledge_lines:
+            knowledge_lines.append(line)
+
+    if additional_context:
+        for item in additional_context:
+            if item not in knowledge_lines:
+                knowledge_lines.append(item)
+
+    if knowledge_lines:
+        system += "\n\nPersistent User Knowledge & Saved Memories:\n" + "\n".join(f"- {l}" for l in knowledge_lines)
+
     return system
 
 
-def ask_ollama(prompt: str, print_output: bool = True) -> str | None:
+def ask_ollama(prompt: str, print_output: bool = True, additional_context: Optional[list[str]] = None) -> str | None:
     """
     Queries the local Ollama instance with the JARVIS system prompt and user memory.
     Returns the response string if successful, else None.
@@ -87,7 +104,7 @@ def ask_ollama(prompt: str, print_output: bool = True) -> str | None:
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
-        "system": get_system_prompt_with_memory(),
+        "system": get_system_prompt_with_memory(additional_context=additional_context),
         "stream": False,
     }
 

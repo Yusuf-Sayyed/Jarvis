@@ -145,6 +145,44 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             context.clear_pending()
             teach_phrase = f"when I say {trigger}, {raw_actions}"
             return route_command(teach_phrase)
+        elif action == "confirm_memory_update":
+            memory = get_memory_store()
+            target_key = payload.get("target_key") or payload.get("key")
+            new_val = payload.get("new_value", "").strip()
+            clean_new = re.sub(
+                r"^(?:it\s+is\s+called|it\s+is|it\x27s\s+called|it\x27s|called|named|set\s+it\s+to|change\s+it\s+to|to)\s+",
+                "",
+                new_val,
+                flags=re.IGNORECASE,
+            ).strip().strip("'\"")
+            clean_new = clean_new.rstrip(".?!,").strip()
+            if not clean_new:
+                clean_new = new_val
+
+            topic = payload.get("topic") or (target_key.replace("_", " ") if target_key else "memory")
+            ok = False
+            if target_key and clean_new:
+                ok = memory.update_memory(target_key, clean_new)
+
+            if ok:
+                print(f'\n[JARVIS] "I have updated your {topic} to \'{clean_new}\', Sir."\n')
+            else:
+                print(f'\n[JARVIS Error] Could not update {topic} in database.\n')
+            context.clear_pending()
+            return True, None
+        elif action == "confirm_memory_forget":
+            memory = get_memory_store()
+            target_key = payload.get("target_key")
+            topic = payload.get("topic") or (target_key.replace("_", " ") if target_key else "memory")
+            ok = False
+            if target_key:
+                ok = memory.delete_memory(target_key)
+            if ok:
+                print(f'\n[JARVIS] "I have forgotten that {topic}, Sir."\n')
+            else:
+                print(f'\n[JARVIS Error] Could not remove {topic} from database.\n')
+            context.clear_pending()
+            return True, None
         context.clear_pending()
         return True, None
 
@@ -566,6 +604,165 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
 
             return True, None
 
+    # 1.6 Conversational Memory Actions (Facts, Preferences, Recall, Deletion, Update)
+    if intent == "MEMORY_ACTION":
+        mem_action = params.get("action")
+        raw = params.get("raw", text)
+        print(f"[Intent: MEMORY_ACTION | Action: {mem_action}]")
+        memory = get_memory_store()
+
+        # 1. Explicit Remember Action
+        if mem_action == "remember_memory":
+            key = params.get("key", "user_memory")
+            topic = params.get("topic", "memory")
+            category = params.get("category", "fact")
+            content = params.get("content", "")
+            stmt = params.get("statement", raw)
+
+            if not content:
+                print('\n[JARVIS Error] Could not determine the fact or preference to remember, Sir.\n')
+                return True, None
+
+            ok = memory.save_memory(
+                memory_key=key,
+                content=content,
+                category=category,
+                topic=topic,
+                raw_statement=stmt,
+            )
+
+            # Requirement 5: Never claim something was remembered unless the database operation succeeded.
+            if ok:
+                if category == "preference":
+                    print(f'\n[JARVIS] "I have noted your preference for {topic}: \'{content}\', Sir."\n')
+                else:
+                    print(f'\n[JARVIS] "I will remember that {topic}: \'{content}\', Sir."\n')
+            else:
+                print(f'\n[JARVIS Error] Failed to persist memory for {topic} to the database, Sir.\n')
+            return True, None
+
+        # 2. Recall Memory Action
+        if mem_action == "recall_memory":
+            query = params.get("query", "")
+            memories = memory.find_memories(query)
+
+            if not memories:
+                print(f'\n[JARVIS] "I could not find any saved memories regarding \'{query}\', Sir."\n')
+                return True, None
+
+            if len(memories) == 1:
+                mem = memories[0]
+                cont = mem.get("content", "")
+                top = mem.get("topic", "")
+                cat = mem.get("category", "fact")
+                if cont.lower().startswith("i live") or cont.lower().startswith("i stay"):
+                    ans = "You " + cont[2:]
+                    print(f'\n[JARVIS] "{ans}, Sir."\n')
+                elif cat == "preference":
+                    print(f'\n[JARVIS] "You prefer {cont}, Sir."\n')
+                elif top.lower() in ("business name", "business", "company"):
+                    print(f'\n[JARVIS] "Your business is called {cont}, Sir."\n')
+                elif cont.lower().startswith("i "):
+                    ans = "You " + cont[2:]
+                    print(f'\n[JARVIS] "{ans}, Sir."\n')
+                else:
+                    print(f'\n[JARVIS] "I remember that {top} is \'{cont}\', Sir."\n')
+            else:
+                print(f'\n[JARVIS] "I found the following saved memories regarding \'{query}\', Sir:"')
+                for m in memories:
+                    print(f"  - {m.get('topic', '').title()}: {m.get('content', '')}")
+                print()
+            return True, None
+
+        # 3. List Memories Action
+        if mem_action == "list_memories":
+            memories = memory.list_all_memories()
+            if not memories:
+                print('\n[JARVIS] "You have no saved memories or preferences, Sir."\n')
+            else:
+                print(f'\n[JARVIS] "You have {len(memories)} saved memory(ies), Sir:"')
+                for idx, m in enumerate(memories, 1):
+                    cat = m.get("category", "fact").capitalize()
+                    top = m.get("topic", m.get("memory_key", "")).title()
+                    cont = m.get("content", "")
+                    print(f"  {idx}. [{cat}] {top}: {cont}")
+                print()
+            return True, None
+
+        # 4. Forget Memory Action
+        if mem_action == "forget_memory":
+            target = params.get("target", "").strip()
+            if not target:
+                print('\n[JARVIS] "Which memory or preference would you like me to forget, Sir?"\n')
+                context.set_pending("clarify_memory_forget")
+                return True, "clarify_memory_forget"
+
+            matches = memory.find_memories(target)
+            if not matches:
+                print(f'\n[JARVIS] "I could not find any saved memory matching \'{target}\' to forget, Sir."\n')
+                return True, None
+
+            if len(matches) > 1:
+                # Ambiguous request: multiple matches
+                print(f'\n[JARVIS] "I found multiple memories matching \'{target}\':"')
+                for idx, m in enumerate(matches, 1):
+                    print(f"  {idx}. {m.get('topic', '').title()}: {m.get('content', '')}")
+                print('Which one would you like me to forget, Sir?"\n')
+                candidates = [m["memory_key"] for m in matches]
+                context.set_pending("clarify_memory_forget", {"candidates": candidates, "query": target})
+                return True, "clarify_memory_forget"
+
+            # Single match
+            target_mem = matches[0]
+            ok = memory.delete_memory(target_mem["memory_key"])
+            if ok:
+                top = target_mem.get("topic") or target_mem["memory_key"].replace("_", " ")
+                print(f'\n[JARVIS] "I have forgotten that {top} ({target_mem.get("content")}), Sir."\n')
+            else:
+                print(f'\n[JARVIS Error] Could not delete memory from the database, Sir.\n')
+            return True, None
+
+        # 5. Update Memory Action
+        if mem_action == "update_memory":
+            target = params.get("target", "").strip()
+            new_val = params.get("new_value")
+
+            if not target:
+                print('\n[JARVIS] "Which memory or preference would you like me to update, Sir?"\n')
+                context.set_pending("clarify_memory_update")
+                return True, "clarify_memory_update"
+
+            matches = memory.find_memories(target)
+            if not matches:
+                print(f'\n[JARVIS] "I could not find any saved memory matching \'{target}\' to update, Sir."\n')
+                return True, None
+
+            if len(matches) > 1:
+                print(f'\n[JARVIS] "I found multiple memories matching \'{target}\':"')
+                for idx, m in enumerate(matches, 1):
+                    print(f"  {idx}. {m.get('topic', '').title()}: {m.get('content', '')}")
+                print('Which one would you like to update, Sir?"\n')
+                candidates = [m["memory_key"] for m in matches]
+                context.set_pending("clarify_memory_update", {"candidates": candidates, "query": target, "new_value": new_val})
+                return True, "clarify_memory_update"
+
+            target_mem = matches[0]
+            if new_val is None:
+                # Ambiguous request: No new value provided
+                top = target_mem.get("topic") or target_mem["memory_key"].replace("_", " ")
+                print(f'\n[JARVIS] "What would you like to update your {top} to, Sir?"\n')
+                context.set_pending("clarify_memory_update", {"target_key": target_mem["memory_key"], "topic": top})
+                return True, "clarify_memory_update"
+
+            # New value provided directly
+            ok = memory.update_memory(target_mem["memory_key"], new_val)
+            if ok:
+                top = target_mem.get("topic") or target_mem["memory_key"].replace("_", " ")
+                print(f'\n[JARVIS] "I have updated your {top} to \'{new_val}\', Sir."\n')
+            else:
+                print(f'\n[JARVIS Error] Could not update memory in the database, Sir.\n')
+            return True, None
+
     # 2. Exit Command
     if intent == "EXIT":
         print("[Intent: EXIT]")
@@ -664,8 +861,40 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
     # 9. Low-confidence / Unclear speech handling
     if intent == "UNCLEAR_SPEECH":
         print("[Intent: UNCLEAR_SPEECH]")
-        print('\n[JARVIS] "I beg your pardon, Sir. Could you please repeat that?"\n')
+        unclear_msg = "I beg your pardon, Sir. Could you please repeat that?"
+        print(f'\n[JARVIS] "{unclear_msg}"\n')
+        from interfaces.speech import speak
+        speak(unclear_msg)
         return True, None
+
+    # 9.5 Local Time and Date Fast-Path (No Ollama / No Web Search)
+    if intent == "TIME_DATE_QUERY":
+        qtype = params.get("type", "time")
+        loc = params.get("location")
+        loc_str = f" | Location: {loc}" if loc else ""
+        print(f"[Intent: TIME_DATE_QUERY | Type: {qtype.capitalize()}{loc_str}]")
+        from actions import clock
+        from interfaces.speech import speak
+
+        if qtype == "date":
+            ok, answer, pending = clock.get_date_answer(loc)
+        elif qtype == "day":
+            ok, answer, pending = clock.get_day_answer(loc)
+        else:
+            ok, answer, pending = clock.get_time_answer(loc)
+
+        if ok:
+            print(f'\n[JARVIS]: "{answer}"\n')
+            speak(answer)
+            context.clear_pending()
+            return True, None
+        else:
+            print(f'\n[JARVIS] "{answer}"\n')
+            speak(answer)
+            if pending:
+                context.set_pending(pending, {"original_query": params})
+                return True, pending
+            return True, None
 
     # 10. Real-Time Web Search & Grounded Information Retrieval (Stage 5)
     if intent == "CURRENT_INFO_QUERY":
@@ -699,6 +928,15 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         answer = ask_ollama(prompt, print_output=False)
         if answer and not is_knowledge_gap(answer):
             print(f"\n[JARVIS]: \"{answer}\"\n")
+            return True, None
+
+        # CRITICAL: Prevent personal or memory queries from leaking to web search!
+        from intelligence.memory_extractor import is_personal_memory_query
+        if is_personal_memory_query(prompt):
+            if answer:
+                print(f"\n[JARVIS]: \"{answer}\"\n")
+            else:
+                print("\n[JARVIS] I don't recall that information yet, Sir.\n")
             return True, None
 
         # If Ollama has a knowledge gap or is unavailable, bridge to real-time web search

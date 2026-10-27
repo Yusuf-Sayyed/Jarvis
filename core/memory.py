@@ -127,6 +127,25 @@ class MemoryStore:
                 )
                 """
             )
+
+            # 6. Conversational User Memories (Facts, Preferences, Knowledge)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_key TEXT NOT NULL UNIQUE,
+                    category TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    raw_statement TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mem_key ON user_memories(memory_key)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mem_topic ON user_memories(topic)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mem_category ON user_memories(category)")
             conn.commit()
 
     # --- Entity / Project Methods ---
@@ -585,6 +604,239 @@ class MemoryStore:
             cursor.execute("SELECT pref_key, pref_value FROM user_preferences")
             return {row["pref_key"]: row["pref_value"] for row in cursor.fetchall()}
 
+    # --- Conversational User Memory Methods ---
+
+    def save_memory(
+        self,
+        memory_key: str,
+        content: str,
+        category: str = "fact",
+        topic: str = "general",
+        raw_statement: str = "",
+    ) -> bool:
+        """
+        Saves or updates a conversational user memory (fact or preference).
+        Returns True if persisted successfully to SQLite, False otherwise.
+        """
+        clean_key = memory_key.lower().strip().replace(" ", "_")
+        clean_content = content.strip()
+        clean_category = category.lower().strip() or "fact"
+        clean_topic = topic.strip() or "general"
+        now = time.time()
+
+        if not clean_key or not clean_content:
+            return False
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO user_memories (memory_key, category, topic, content, raw_statement, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(memory_key) DO UPDATE SET
+                        content = excluded.content,
+                        category = excluded.category,
+                        topic = excluded.topic,
+                        raw_statement = excluded.raw_statement,
+                        updated_at = excluded.updated_at
+                    """,
+                    (clean_key, clean_category, clean_topic, clean_content, raw_statement.strip(), now, now),
+                )
+                # Keep user_preferences in sync for backwards compatibility
+                cursor.execute(
+                    """
+                    INSERT INTO user_preferences (pref_key, pref_value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(pref_key) DO UPDATE SET
+                        pref_value = excluded.pref_value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (clean_key, clean_content, now),
+                )
+                conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def get_memory(self, memory_key: str) -> Optional[dict[str, Any]]:
+        """Retrieves a specific memory by key."""
+        clean_key = memory_key.lower().strip().replace(" ", "_")
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM user_memories WHERE memory_key = ?",
+                    (clean_key,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+        except Exception:
+            pass
+        return None
+
+    def update_memory(self, memory_key: str, new_content: str) -> bool:
+        """
+        Updates the content of an existing memory.
+        Returns True if the memory existed and was updated, False otherwise.
+        """
+        clean_key = memory_key.lower().strip().replace(" ", "_")
+        clean_content = new_content.strip()
+        if not clean_key or not clean_content:
+            return False
+        now = time.time()
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE user_memories
+                    SET content = ?, updated_at = ?
+                    WHERE memory_key = ?
+                    """,
+                    (clean_content, now, clean_key),
+                )
+                if cursor.rowcount > 0:
+                    cursor.execute(
+                        """
+                        UPDATE user_preferences
+                        SET pref_value = ?, updated_at = ?
+                        WHERE pref_key = ?
+                        """,
+                        (clean_content, now, clean_key),
+                    )
+                    conn.commit()
+                    return True
+                return False
+        except Exception:
+            return False
+
+    def delete_memory(self, memory_key: str) -> bool:
+        """
+        Deletes a memory by key.
+        Returns True if deleted, False if not found or failed.
+        """
+        clean_key = memory_key.lower().strip().replace(" ", "_")
+        if not clean_key:
+            return False
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM user_memories WHERE memory_key = ?", (clean_key,))
+                deleted = cursor.rowcount > 0
+                if deleted:
+                    cursor.execute("DELETE FROM user_preferences WHERE pref_key = ?", (clean_key,))
+                    conn.commit()
+                return deleted
+        except Exception:
+            return False
+
+    def find_memories(self, query: str) -> list[dict[str, Any]]:
+        """
+        Searches user memories matching a topic, query keyword, or key.
+        """
+        raw_clean = query.strip()
+        clean_q = re.sub(r"[^\w\s]", "", raw_clean).lower().strip()
+        if not clean_q:
+            return self.list_all_memories()
+
+        # 1. Direct key match
+        direct_key = clean_q.replace(" ", "_")
+        mem = self.get_memory(direct_key)
+        if mem:
+            return [mem]
+
+        like_pattern = f"%{clean_q}%"
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT * FROM user_memories
+                    WHERE LOWER(memory_key) LIKE ?
+                       OR LOWER(topic) LIKE ?
+                       OR LOWER(content) LIKE ?
+                       OR LOWER(raw_statement) LIKE ?
+                    ORDER BY updated_at DESC
+                    """,
+                    (like_pattern, like_pattern, like_pattern, like_pattern),
+                )
+                results = [dict(r) for r in cursor.fetchall()]
+                if results:
+                    return results
+
+                # 2. Keyword and Semantic Search
+                filler = {
+                    "what", "with", "whom", "tell", "remember", "about", "that", "this",
+                    "know", "did", "does", "have", "has", "are", "was", "the", "you",
+                    "show", "list", "can", "could", "please", "now", "me", "my", "your",
+                    "i", "say", "said", "previously", "saved", "told",
+                }
+                words = [w for w in clean_q.split() if len(w) >= 3 and w not in filler]
+
+                # Semantic expansions
+                if "room" in clean_q or "live" in clean_q:
+                    if "roommate" not in words:
+                        words.append("roommate")
+                if "business" in clean_q or "company" in clean_q:
+                    if "business_name" not in words:
+                        words.append("business")
+                if "answer" in clean_q or "length" in clean_q or "short" in clean_q:
+                    if "answer_length" not in words:
+                        words.append("answer")
+                if "preference" in clean_q or "prefer" in clean_q:
+                    cursor.execute("SELECT * FROM user_memories WHERE category = 'preference' ORDER BY updated_at DESC")
+                    pref_results = [dict(r) for r in cursor.fetchall()]
+                    if pref_results:
+                        return pref_results
+
+                if words:
+                    conds = " OR ".join(["LOWER(content) LIKE ? OR LOWER(topic) LIKE ? OR LOWER(memory_key) LIKE ? OR LOWER(raw_statement) LIKE ?"] * len(words))
+                    params = []
+                    for w in words:
+                        p = f"%{w}%"
+                        params.extend([p, p, p, p])
+                    cursor.execute(f"SELECT * FROM user_memories WHERE {conds} ORDER BY updated_at DESC", params)
+                    seen_keys = set()
+                    unique_results = []
+                    for r in cursor.fetchall():
+                        m_dict = dict(r)
+                        k = m_dict["memory_key"]
+                        if k not in seen_keys:
+                            seen_keys.add(k)
+                            unique_results.append(m_dict)
+                    return unique_results
+                return []
+        except Exception:
+            return []
+
+    def list_all_memories(self, category: Optional[str] = None) -> list[dict[str, Any]]:
+        """Lists all stored user memories, optionally filtered by category."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                if category:
+                    cursor.execute(
+                        "SELECT * FROM user_memories WHERE category = ? ORDER BY updated_at DESC",
+                        (category.lower().strip(),),
+                    )
+                else:
+                    cursor.execute("SELECT * FROM user_memories ORDER BY updated_at DESC")
+                return [dict(r) for r in cursor.fetchall()]
+        except Exception:
+            return []
+
+    def clear_all_memories(self) -> bool:
+        """Clears all stored conversational memories."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM user_memories")
+                conn.commit()
+            return True
+        except Exception:
+            return False
 
     # --- Inspection & Management ---
 
@@ -603,11 +855,14 @@ class MemoryStore:
             cursor.execute("SELECT * FROM user_preferences")
             preferences = [dict(r) for r in cursor.fetchall()]
 
+            memories = self.list_all_memories()
+
             return {
                 "entities": entities,
                 "learned_patterns": patterns,
                 "workflows": workflows,
                 "user_preferences": preferences,
+                "user_memories": memories,
             }
 
     def clear_learned_entries(self):

@@ -373,7 +373,14 @@ RE_CURRENT_INFO = re.compile(
 def is_current_info_query(text: str) -> bool:
     """
     Identifies whether an utterance seeks live, real-time web or current news/weather information.
+    Guarantees that private personal memory questions and local time/date questions never trigger web search.
     """
+    from intelligence.memory_extractor import is_personal_memory_query
+    if is_personal_memory_query(text):
+        return False
+    from actions.clock import parse_time_date_query
+    if parse_time_date_query(text) is not None:
+        return False
     clean = text.lower().strip()
     return bool(RE_CURRENT_INFO.search(clean))
 
@@ -447,6 +454,33 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     if active_pending == "delete_workflow_prompt" and clean_text:
         return "SMART_ACTION", {"action": "delete_workflow", "params": {"workflow_name": clean_text}}
 
+    if active_pending == "clarify_memory_update" and clean_text:
+        return "CONFIRM_ACTION", {
+            "action": "confirm_memory_update",
+            "payload": {"new_value": text.strip(), **(pending_payload or {})},
+        }
+
+    if active_pending == "clarify_memory_forget" and clean_text:
+        candidates = (pending_payload or {}).get("candidates", [])
+        chosen = None
+        for cand in candidates:
+            if cand.lower().replace("_", " ") in clean_text or cand.lower() in clean_text:
+                chosen = cand
+                break
+        if not chosen:
+            if "first" in clean_text and len(candidates) >= 1:
+                chosen = candidates[0]
+            elif "second" in clean_text and len(candidates) >= 2:
+                chosen = candidates[1]
+            elif "third" in clean_text and len(candidates) >= 3:
+                chosen = candidates[2]
+            else:
+                chosen = clean_text.strip().replace(" ", "_")
+        return "CONFIRM_ACTION", {
+            "action": "confirm_memory_forget",
+            "payload": {"target_key": chosen, **(pending_payload or {})},
+        }
+
     if active_pending == "clarify_media_player":
         candidates = (pending_payload or {}).get("candidates", [])
         act = (pending_payload or {}).get("action", "pause")
@@ -463,6 +497,15 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
                 selected = candidates[1]
         if selected:
             return "MEDIA_CONTROL", {"action": act, "target": selected, **extra}
+
+    if active_pending == "clarify_time_location" and clean_text:
+        from actions.clock import parse_time_date_query
+        new_q = parse_time_date_query(text)
+        if new_q is not None:
+            return "TIME_DATE_QUERY", new_q
+        orig = (pending_payload or {}).get("original_query", {})
+        q_type = orig.get("type", "time")
+        return "TIME_DATE_QUERY", {"type": q_type, "location": clean_text, "raw": text}
 
     # 2. Exit commands
     if any(clean_text == cmd or clean_text.startswith(cmd) or clean_text.endswith(cmd) for cmd in EXIT_COMMANDS):
@@ -540,7 +583,19 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     if any(trigger in clean_text for trigger in ("open youtube", "launch youtube", "start youtube")):
         return "DESKTOP_ACTION", {"action": "open_youtube"}
 
-    # 8.5 Natural-Language Smart Intent & Learned Workflow Routing
+    # 8.4 Dedicated Local Time and Date Fast-Path (No Ollama / No Web Search)
+    from actions.clock import parse_time_date_query
+    time_date_intent = parse_time_date_query(text)
+    if time_date_intent is not None:
+        return "TIME_DATE_QUERY", time_date_intent
+
+    # 8.5 Conversational Memory Management (Facts & Preferences)
+    from intelligence.memory_extractor import parse_memory_request
+    mem_intent = parse_memory_request(text)
+    if mem_intent:
+        return "MEMORY_ACTION", mem_intent
+
+    # 8.6 Natural-Language Smart Intent & Learned Workflow Routing
     smart = extract_smart_intent(clean_text)
     if smart:
         return "SMART_ACTION", smart
