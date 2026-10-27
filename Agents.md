@@ -1,94 +1,109 @@
-Improve my existing JARVIS assistant in `~/jarvis` so it can perform browser searches and type text from my voice commands.
+I want to change the core design of my existing `~/jarvis` project.
 
-**First inspect the existing code and explain your planned changes before editing. Preserve the current working features, Vosk + PyAudio offline recognition, Ollama integration, wake phrase, and five-minute active-session timeout if implemented. Do not rewrite the project from scratch.**
+My goal is a self-improving, Tony Stark-inspired JARVIS assistant that learns from our conversations and becomes more capable over time. I do NOT want to manually add a new hardcoded command for every phrase or application.
 
-### 1. Voice-controlled browser searches
-Support natural commands such as:
-- “Search Google for Python tutorials.”
-- “Search YouTube for Iron Man trailers.”
-- “Find the best Linux laptops on Google.”
-- “Open Firefox and search for Fedora KDE tips.”
-- “Open a new tab and search for Python courses.”
-- “Search for [anything I say].”
+My current setup:
+- Fedora KDE Linux
+- Python project at `~/jarvis`
+- Local Whisper `base.en` INT8 for speech recognition
+- Silero VAD
+- Local Ollama with `llama3.2:3b`
+- Existing intent detection, router, desktop actions, wake-word session, and speech output
 
-Extract the actual search terms accurately. URL-encode the query and open the correct search results in Firefox. Do not send these obvious browser actions to Ollama.
+Keep it local and offline. No paid APIs or cloud speech recognition.
 
-### 2. Type what I say
-Support commands such as:
-- “Type hello world.”
-- “Type Python installation guide into the search box.”
-- “Type [spoken text] and press Enter.”
+### Core requirement: build a learning system
 
-Use a suitable desktop automation method compatible with Fedora KDE. Inspect available tools and permissions first; explain any dependencies before installing them. Only type into the intended, focused field. Do not press Enter automatically unless the command explicitly requests it.
+When I say something unfamiliar, such as:
 
-### 3. Browser keyboard actions
-Support:
-- “Open a new tab.”
-- “Close the current tab” — ask for confirmation first.
-- “Switch to the next tab.”
-- “Go back.”
-- “Go forward.”
-- “Refresh the page.”
+“Open my Lensify project in Antigravity.”
 
-Use explicit, predefined functions for these actions. Do not let Ollama generate or execute shell commands.
+JARVIS should:
+1. Understand my intention using the local LLM when necessary.
+2. Identify the target application and project directory using installed application metadata and filesystem information.
+3. Resolve aliases and likely speech-recognition mistakes carefully.
+4. Construct a structured action plan using supported, validated operations.
+5. Execute the plan and verify success where possible.
+6. Save useful knowledge from the successful interaction so similar requests work better in the future.
 
-### 4. Reliability and safety
-- Normalize case, punctuation, spacing, and common Vosk transcription variations.
-- Do not execute partial speech-recognition results.
-- Print the recognized phrase and detected intent for debugging.
-- If the search query is unclear, ask me to repeat it.
-- Confirm before destructive or risky actions.
-- Never claim an action succeeded unless the relevant operation was actually performed.
-- Keep everything local/offline except the browser pages I explicitly request to open.
-- Do not introduce paid APIs.
+If I later say “open Lensify in my editor,” JARVIS should use the learned association when the context supports it.
 
-### 5. Test and explain
-After editing, tell me exactly which files changed, which dependencies (if any) were added, and how to test every command. Include a test for the five-minute inactivity timeout.
+### Persistent memory and learning
 
-Make changes incrementally and avoid breaking existing commands. Do not download a different speech model automatically.
+Design a local learning store for:
+- Application names and aliases.
+- Known project directories and user-defined nicknames.
+- Successful task patterns.
+- Multi-step workflows.
+- User preferences.
+- Corrections I explicitly provide.
+- Which learned procedures succeeded or failed.
 
+Use a suitable local database or structured storage. Do not store every raw conversation indefinitely. Provide a way to inspect, correct, disable, or delete learned entries.
 
+Distinguish between a user preference, a learned phrase, a reusable workflow, and an actual new software capability.
 
+### Learn workflows, not just phrases
 
+For example, after I teach JARVIS:
 
-Refactor my existing JARVIS project at `~/jarvis` into a clean, modular Python architecture.
+“Open the Lensify project in Antigravity, then open Konsole in the same directory.”
 
-Before making changes:
-1. Inspect every relevant existing file, especially `jarvis.py`.
-2. Identify the currently working features and dependencies.
-3. Propose a migration plan that preserves existing behavior.
+It should save a reusable workflow. In the future, “Open Lensify for development” could invoke the workflow if the intent is sufficiently clear.
 
-Create a maintainable structure with these modules:
+Support composing existing capabilities into new workflows instead of writing a new hardcoded handler for every combination.
 
-- `jarvis.py` — application entry point
-- `core/listener.py` — Vosk and PyAudio speech recognition
-- `core/wake_word.py` — wake phrase and active-session timeout
-- `core/intent.py` — command normalization and intent detection
-- `core/router.py` — dispatching commands to handlers
-- `core/config.py` — paths and shared configuration
-- `actions/browser.py` — browser searches and tab actions
-- `actions/keyboard.py` — keyboard input and shortcuts
-- `actions/desktop.py` — application and folder launching
-- `intelligence/ollama_client.py` — local Ollama API
-- `interfaces/speech.py` — future text-to-speech integration
-- `tests/` — automated tests for important behavior
+### Self-improvement without breaking itself
 
-Add `__init__.py` files wherever Python package imports require them.
+Do not automatically rewrite Python source files or execute code generated by the LLM.
 
-Requirements:
-- Preserve the existing virtual environment, Vosk model, Ollama integration, and working commands.
-- Keep all speech recognition offline.
-- Do not download models or install dependencies without asking first.
-- Do not duplicate functionality across modules.
-- Use clear function names, type hints where useful, and useful error handling.
-- Keep `jarvis.py` small and focused on starting the application.
-- Never use `shell=True` or allow Ollama to execute arbitrary shell commands.
-- Keep the existing wake-word and five-minute inactivity behavior if already implemented.
-- Add unit tests for command routing where practical.
-- Do not implement new browser or keyboard features during this refactor.
+Use this progression:
+- First, try existing validated capabilities.
+- If a new workflow can be built from supported actions, construct and save it.
+- If a capability is genuinely missing, explain the gap and propose a small code change.
+- Generate and test the proposed change in isolation.
+- Ask for approval before enabling changes to the core assistant.
+- Preserve backups and provide rollback capability.
 
-Make a backup of the existing code before editing. Migrate incrementally, then run available tests and verify that the existing commands still work. If something cannot be tested, clearly tell me rather than claiming it works.
+Never let Ollama generate arbitrary shell commands and execute them without validation. Use a restricted action registry with validated parameters, appropriate permissions, and confirmations for risky operations.
 
-When finished, show me the final directory tree, summarize every changed file, list test results, and give me the exact commands to launch JARVIS.
+### Make command understanding natural
 
-Do not delete the original backup or the Vosk model.
+Avoid building a huge list of exact phrases or an ever-growing `if/else` chain.
+
+Use a combination of:
+- Local LLM intent and parameter extraction.
+- Existing deterministic handlers for fast, reliable execution.
+- Application and directory discovery.
+- Persistent learned aliases and workflows.
+- Confidence thresholds and clarification questions.
+- Deterministic execution and result verification.
+
+Simple known actions must bypass unnecessary Ollama calls for speed.
+
+### Conversation continuity
+
+Remember a pending task briefly and understand follow-ups such as:
+- “In the Lensify folder.”
+- “Open that in Antigravity.”
+- “Now open a terminal there too.”
+- “Use VS Code instead.”
+- “Yes, please.”
+
+Never treat “yes” as permission to execute an unrelated action. Ask for clarification when context is insufficient.
+
+### Implementation instructions
+
+First inspect the existing project, architecture, tests, and dependencies. Do not assume anything is implemented without checking.
+
+Then propose a staged plan for:
+1. A local persistent memory and learning store.
+2. Natural-language intent and parameter extraction.
+3. A validated action planner.
+4. Reusable, composable workflows.
+5. Success/failure tracking and safe learning.
+6. A controlled system for proposing and testing new capabilities.
+
+Do not rewrite the whole project in one change. Start with an audit and plan. Preserve Whisper, Silero VAD, wake-word behavior, local Ollama, and existing working functionality.
+
+Report the relevant files, proposed data model, safety boundaries, tests, and how I can verify the result on my laptop. Be honest about what was actually tested.

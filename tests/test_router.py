@@ -3,6 +3,7 @@ Unit tests for command routing: YouTube playback, browser tab actions, and confi
 """
 
 import unittest
+from unittest.mock import MagicMock, patch
 from core.router import route_command
 
 
@@ -34,20 +35,26 @@ class TestRouter(unittest.TestCase):
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
 
-    def test_open_new_tab(self):
+    @patch("actions.browser.open_firefox_tab")
+    def test_open_new_tab(self, mock_firefox_tab):
         should_continue, pending = route_command("open a new tab")
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
+        mock_firefox_tab.assert_called_once()
 
-    def test_youtube_playback_routing(self):
+    @patch("actions.browser.play_youtube_video")
+    def test_youtube_playback_routing(self, mock_play):
         should_continue, pending = route_command("play relaxing music on youtube")
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
+        mock_play.assert_called_once_with("relaxing music")
 
-    def test_youtube_first_result_routing(self):
+    @patch("actions.browser.open_first_youtube_result")
+    def test_youtube_first_result_routing(self, mock_first_result):
         should_continue, pending = route_command("open the first youtube result")
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
+        mock_first_result.assert_called_once()
 
     def test_search_and_play_prompts(self):
         # 1. Play prompt when title is missing
@@ -64,6 +71,31 @@ class TestRouter(unittest.TestCase):
         should_continue, pending = route_command("um")
         self.assertTrue(should_continue)
         self.assertIsNone(pending)
+
+    @patch("actions.desktop.open_terminal")
+    def test_terminal_routing(self, mock_open_term):
+        # Verify terminal command variations route cleanly without prompting or exit
+        for phrase in ("open terminal", "can you open new terminal?", "launch konsole", "start terminal for me"):
+            should_continue, pending = route_command(phrase)
+            self.assertTrue(should_continue)
+            self.assertIsNone(pending)
+        self.assertEqual(mock_open_term.call_count, 4)
+
+    @patch("subprocess.Popen")
+    def test_open_konsole_in_project_folder_routes_to_smart_action(self, mock_popen):
+        """
+        Regression test: 'Open Konsole in my Lensify project folder.' must NOT be hijacked
+        as generic open_terminal; it must route to smart action with target project path.
+        """
+        with patch("actions.resolver.DirectoryResolver.resolve_project_directory", return_value=("/home/yusuf/Desktop/Lensify", ["/home/yusuf/Desktop/Lensify"])):
+            should_continue, pending = route_command("Open Konsole in my Lensify project folder.")
+            self.assertTrue(should_continue)
+            self.assertIsNone(pending)
+            mock_popen.assert_called_once()
+            args = mock_popen.call_args[0][0]
+            self.assertIn("konsole", args[0].lower())
+            self.assertIn("--workdir", args)
+            self.assertIn("/home/yusuf/Desktop/Lensify", args)
 
 
 if __name__ == "__main__":

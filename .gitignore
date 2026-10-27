@@ -13,3 +13,5 @@ models/
 # Local backups
 *.backup
 *.bak
+*.bak*
+

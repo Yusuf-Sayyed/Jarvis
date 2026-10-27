@@ -51,3 +51,20 @@ JARVIS_SYSTEM_PROMPT = (
     "accurately explain that Python can perform only the actions explicitly implemented in the program, and that "
     "the requested action has not been programmed yet. Never claim to have performed an action you did not perform."
 )
+
+# Real-Time Web Search Settings (Stage 5)
+WEB_SEARCH_PROVIDER = "ddgs"  # Options: "ddgs" (Python package) or "direct" (Built-in keyless HTTP fallback)
+WEB_SEARCH_MAX_RESULTS = 3
+WEB_SEARCH_TIMEOUT_SECONDS = 8
+OLLAMA_GROUNDED_TIMEOUT_SECONDS = 40
+
+GROUNDED_SEARCH_SYSTEM_PROMPT = (
+    "You are JARVIS, a concise and intelligent AI assistant. "
+    "You are provided with real-time web search evidence to answer the user's question. "
+    "Do NOT say you cannot access real-time information or that you are an AI without internet access. "
+    "Answer the user's question directly, concisely, and factually (1 to 3 sentences maximum) using ONLY the provided evidence. "
+    "Mention key source names (e.g. 'According to Reuters') and dates when available. "
+    "If the search evidence is insufficient, clearly state that the available search results do not provide enough information. "
+    "Do not include URLs in the spoken text."
+)
+

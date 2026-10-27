@@ -6,15 +6,117 @@ browser search variations, and low-confidence speech guards.
 
 import re
 from core.config import EXIT_COMMANDS
+from core.context import get_conversation_context
+from intelligence.intent_extractor import extract_smart_intent, extract_volume_intent
 
 CONVERSATIONAL_PREFIXES = (
     r"^(?:(?:hey|hi|hello|ok|okay)?\s*jarvis\s*,?\s*)?"
-    r"(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+|will\s+you\s+|i\s+want\s+you\s+to\s+|can\s+we\s+|just\s+)+"
+    r"(?:"
+    r"can\s+you(?:\s+please)?\s+|"
+    r"could\s+you(?:\s+please)?\s+|"
+    r"would\s+you(?:\s+please)?\s+|"
+    r"will\s+you(?:\s+please)?\s+|"
+    r"please\s+|"
+    r"i\s+want\s+you\s+to\s+|"
+    r"can\s+we\s+|"
+    r"just\s+|"
+    r"is\s+it\s+possible(?:\s+for\s+you)?\s+to\s+|"
+    r"would\s+it\s+be\s+possible(?:\s+for\s+you)?\s+to\s+|"
+    r"are\s+you\s+able\s+to\s+|"
+    r"do\s+you\s+mind\s+"
+    r")+"
+)
+
+TERMINAL_COMMAND_PATTERN = re.compile(
+    r"^(?:open|launch|start)\s+(?:(?:a|another)\s+)?(?:new\s+)?(?:terminal|konsole|console)(?:\s+window)?(?:\s+for\s+me)?$"
 )
 
 UNCLEAR_NOISE = {
     "um", "uh", "ah", "the", "a", "an", "huh", "oh", "hmm", "and", "or", "so", "to"
 }
+
+# Media control patterns
+RE_MEDIA_PAUSE = re.compile(
+    r"^(?:pause(?:\s+(?:the\s+|this\s+|current\s+)?(?:video|playback|media|song|track|movie|stream|firefox|youtube|vlc|spotify))?|pause|hold\s+on)$",
+    re.IGNORECASE,
+)
+RE_MEDIA_RESUME = re.compile(
+    r"^(?:resume(?:\s+(?:the\s+|this\s+|current\s+)?(?:video|playback|media|playing|song|track|movie|stream|firefox|youtube|vlc|spotify))?|continue\s+(?:playing|playback|the\s+video|video)|unpause(?:\s+(?:the\s+|this\s+)?(?:video|playback|media))?|play(?:\s+(?:the\s+|this\s+|current\s+)?(?:video|playback|media|song|track|movie|stream))?|play)$",
+    re.IGNORECASE,
+)
+RE_MEDIA_STOP = re.compile(
+    r"^(?:stop)(?:\s+(?:the\s+|this\s+|current\s+)?(?:video|playback|media|playing|song|track|movie|stream|firefox|youtube|vlc|spotify))?$",
+    re.IGNORECASE,
+)
+RE_MEDIA_MUTE = re.compile(
+    r"^(?:mute)\s+(?:the\s+|this\s+)?(?:video|playback|media|movie|stream|player)(?:\s+audio)?$",
+    re.IGNORECASE,
+)
+RE_MEDIA_UNMUTE = re.compile(
+    r"^(?:unmute)\s+(?:the\s+|this\s+)?(?:video|playback|media|movie|stream|player)(?:\s+audio)?$",
+    re.IGNORECASE,
+)
+RE_MEDIA_SEEK_FWD = re.compile(
+    r"^(?:skip\s+forward|skip\s+ahead|fast\s+forward|go\s+forward)(?:\s+(?:by\s+)?(\d+)\s*(?:seconds?|secs?|s)?)?$|^(?:forward)\s+(?:by\s+)?(\d+)\s*(?:seconds?|secs?|s)$",
+    re.IGNORECASE,
+)
+RE_MEDIA_SEEK_BACK = re.compile(
+    r"^(?:skip\s+back(?:ward)?|rewind)(?:\s+(?:by\s+)?(\d+)\s*(?:seconds?|secs?|s)?)?$|^(?:go\s+back|backward)\s+(?:by\s+)?(\d+)\s*(?:seconds?|secs?|s)$",
+    re.IGNORECASE,
+)
+RE_MEDIA_NEXT = re.compile(
+    r"^(?:next\s+(?:video|track|song|media)|skip\s+(?:video|track|song))$",
+    re.IGNORECASE,
+)
+RE_MEDIA_PREV = re.compile(
+    r"^(?:previous|prev)\s+(?:video|track|song|media)$",
+    re.IGNORECASE,
+)
+
+
+def parse_media_command(text: str) -> tuple[str | None, dict]:
+    """
+    Extracts media control intent and parameters from natural speech.
+    Returns:
+        (action, params) if recognized as a media control intent, else (None, {}).
+    """
+    cleaned = normalize_spoken_text(text)
+
+    target = None
+    for app in ("firefox", "vlc", "spotify", "chromium", "chrome"):
+        if app in cleaned:
+            target = app
+            break
+
+    if RE_MEDIA_PAUSE.match(cleaned):
+        return "pause", {"target": target}
+    if RE_MEDIA_RESUME.match(cleaned):
+        return "resume", {"target": target}
+    if RE_MEDIA_STOP.match(cleaned):
+        return "stop", {"target": target}
+    if RE_MEDIA_MUTE.match(cleaned):
+        return "mute", {"mute_state": True, "target": target}
+    if RE_MEDIA_UNMUTE.match(cleaned):
+        return "mute", {"mute_state": False, "target": target}
+
+    m = RE_MEDIA_SEEK_FWD.match(cleaned)
+    if m:
+        sec = m.group(1) or m.group(2)
+        offset = int(sec) if sec else 10
+        return "seek", {"offset": offset, "target": target}
+
+    m = RE_MEDIA_SEEK_BACK.match(cleaned)
+    if m:
+        sec = m.group(1) or m.group(2)
+        offset = int(sec) if sec else 10
+        return "seek", {"offset": -offset, "target": target}
+
+    if RE_MEDIA_NEXT.match(cleaned):
+        return "next", {"target": target}
+    if RE_MEDIA_PREV.match(cleaned):
+        return "previous", {"target": target}
+
+    return None, {}
 
 
 def normalize_spoken_text(text: str) -> str:
@@ -87,7 +189,6 @@ def parse_youtube_play(text: str) -> tuple[str | None, str | None]:
     generic_play_phrases = (
         "play a video on youtube", "play video on youtube", "play on youtube",
         "play a video in youtube", "play something on youtube", "play video in youtube",
-        "play a video", "play video"
     )
     if cleaned in generic_play_phrases:
         return "YOUTUBE_PLAY_PROMPT", None
@@ -111,8 +212,11 @@ def parse_youtube_play(text: str) -> tuple[str | None, str | None]:
     m = re.match(r"^play\s+(.+)$", cleaned)
     if m:
         query = sanitize_search_query(m.group(1))
-        if query in ("a video", "video", "something", "music on youtube"):
-            return "YOUTUBE_PLAY_PROMPT", None
+        if query in (
+            "a video", "video", "something", "music on youtube",
+            "this video", "the video", "playback", "media"
+        ):
+            return None, None
         if query:
             return "YOUTUBE_PLAY", query
 
@@ -203,6 +307,31 @@ def parse_type_command(text: str) -> tuple[str | None, bool]:
     return content, press_enter
 
 
+RE_CURRENT_INFO = re.compile(
+    r"\b(?:"
+    r"what(?:'s|\s+is)\s+happening|"
+    r"what(?:'s|\s+is)\s+(?:the\s+)?weather|"
+    r"weather\s+(?:in|for|at|today|right\s+now|outside)|"
+    r"(?:the\s+)?latest\s+(?:news|info(?:rmation)?|updates?|headlines?|version|release|score|details)|"
+    r"(?:recent|breaking)\s+(?:news|headlines?|events?|updates?)|"
+    r"news\s+(?:about|on|regarding)|"
+    r"(?:today(?:'s)?|tonight(?:'s)?)\s+(?:news|headlines|weather|forecast|score|events?)|"
+    r"(?:news|headlines|weather|forecast|score|events?)\s+(?:today|tonight|yesterday|right\s+now|currently)|"
+    r"\b(?:today|right\s+now|currently|latest|breaking|recent\s+news)\b|"
+    r"\bcurrent\b(?!\s+(?:tab|window|folder|directory|interaction|app))"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_current_info_query(text: str) -> bool:
+    """
+    Identifies whether an utterance seeks live, real-time web or current news/weather information.
+    """
+    clean = text.lower().strip()
+    return bool(RE_CURRENT_INFO.search(clean))
+
+
 def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, dict]:
     """
     Analyzes spoken text and determines the structured intent and parameters.
@@ -213,11 +342,47 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     clean_text = normalize_spoken_text(text)
 
     # 1. Pending confirmation and prompt responses
-    if pending_action == "close_tab":
-        if clean_text in ("yes", "confirm", "do it", "sure", "yeah", "yep", "close it"):
-            return "CONFIRM_ACTION", {"action": "close_tab"}
-        elif clean_text in ("no", "cancel", "stop", "abort", "don't", "dont"):
-            return "CANCEL_ACTION", {"action": "close_tab"}
+    context = get_conversation_context()
+    valid_pending, pending_payload = context.get_valid_pending()
+    active_pending = pending_action or valid_pending
+
+    if active_pending:
+        affirmative = (
+            "yes", "confirm", "do it", "sure", "yeah", "yep", "yes please",
+            "yes, please", "close it", "open it", "proceed", "go ahead",
+            "save", "save it", "save workflow", "delete", "delete it",
+        )
+        negative = ("no", "cancel", "stop", "abort", "don't", "dont", "no thanks", "never mind")
+        if clean_text in affirmative:
+            return "CONFIRM_ACTION", {"action": active_pending, "payload": pending_payload or {}}
+        elif clean_text in negative:
+            return "CANCEL_ACTION", {"action": active_pending}
+
+    if active_pending == "clarify_workflow_folder":
+        candidates = (pending_payload or {}).get("candidates", [])
+        chosen = None
+        for cand in candidates:
+            parts = cand.lower().split("/")
+            c_name = parts[-1] if parts else ""
+            c_parent = parts[-2] if len(parts) >= 2 else ""
+            if cand.lower() in clean_text or (c_parent and c_parent in clean_text):
+                chosen = cand
+                break
+        if not chosen:
+            if "first" in clean_text and len(candidates) >= 1:
+                chosen = candidates[0]
+            elif "second" in clean_text and len(candidates) >= 2:
+                chosen = candidates[1]
+            elif "third" in clean_text and len(candidates) >= 3:
+                chosen = candidates[2]
+        if chosen:
+            return "CONFIRM_ACTION", {
+                "action": "confirm_workflow_folder_choice",
+                "payload": {
+                    "chosen_path": chosen,
+                    **(pending_payload or {}),
+                },
+            }
 
     if pending_action == "youtube_play" and clean_text:
         return "YOUTUBE_PLAY", {"query": clean_text}
@@ -227,6 +392,31 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
 
     if pending_action == "search_youtube" and clean_text:
         return "BROWSER_SEARCH", {"engine": "youtube", "query": clean_text}
+
+    if active_pending == "set_volume_query" and clean_text:
+        vol_res = extract_volume_intent(f"set volume to {clean_text}")
+        if vol_res and vol_res.get("action") in ("volume_set", "volume_limit_clarification"):
+            return "SMART_ACTION", vol_res
+
+    if active_pending == "delete_workflow_prompt" and clean_text:
+        return "SMART_ACTION", {"action": "delete_workflow", "params": {"workflow_name": clean_text}}
+
+    if active_pending == "clarify_media_player":
+        candidates = (pending_payload or {}).get("candidates", [])
+        act = (pending_payload or {}).get("action", "pause")
+        extra = (pending_payload or {}).get("params", {})
+        selected = None
+        for cand in candidates:
+            if cand.lower() in clean_text:
+                selected = cand
+                break
+        if not selected:
+            if "first" in clean_text and len(candidates) >= 1:
+                selected = candidates[0]
+            elif "second" in clean_text and len(candidates) >= 2:
+                selected = candidates[1]
+        if selected:
+            return "MEDIA_CONTROL", {"action": act, "target": selected, **extra}
 
     # 2. Exit commands
     if any(clean_text == cmd or clean_text.startswith(cmd) for cmd in EXIT_COMMANDS):
@@ -238,6 +428,11 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         for trigger in ("close the current tab", "close current tab", "close this tab", "close the tab", "close tab")
     ):
         return "REQUEST_CONFIRMATION", {"action": "close_tab"}
+
+    # 3.5 Deterministic Media and Video Playback Controls Fast-Path
+    media_action, media_params = parse_media_command(text)
+    if media_action is not None:
+        return "MEDIA_CONTROL", {"action": media_action, **media_params}
 
     # 4. YouTube Direct Video Playback (Play ... on YouTube, Open first result, Prompt)
     play_intent, play_query = parse_youtube_play(clean_text)
@@ -290,7 +485,7 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
     if any(trigger in clean_text for trigger in ("open firefox", "launch firefox", "start firefox")):
         return "DESKTOP_ACTION", {"action": "open_firefox"}
 
-    if any(trigger in clean_text for trigger in ("open terminal", "launch terminal", "start terminal", "open konsole", "launch konsole")):
+    if TERMINAL_COMMAND_PATTERN.match(clean_text):
         return "DESKTOP_ACTION", {"action": "open_terminal"}
 
     if any(trigger in clean_text for trigger in ("open downloads", "open download", "open downloads folder", "downloads folder")):
@@ -298,6 +493,15 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
 
     if any(trigger in clean_text for trigger in ("open youtube", "launch youtube", "start youtube")):
         return "DESKTOP_ACTION", {"action": "open_youtube"}
+
+    # 8.5 Natural-Language Smart Intent & Learned Workflow Routing
+    smart = extract_smart_intent(text)
+    if smart:
+        return "SMART_ACTION", smart
+
+    # 8.8 Real-Time Web Search & Current Information Questions (Stage 5)
+    if is_current_info_query(clean_text):
+        return "CURRENT_INFO_QUERY", {"query": clean_text, "raw": text}
 
     # 9. Low-confidence / Unclear speech filtering (Prevents random noise from reaching Ollama)
     if clean_text in UNCLEAR_NOISE or len(clean_text) <= 2:
@@ -308,8 +512,7 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         "what", "how", "why", "who", "when", "where", "is", "are", "can", "could",
         "would", "will", "tell", "explain", "do", "does", "which"
     )
-    words = clean_text.split()
-    if len(words) >= 2 or any(clean_text.startswith(q) for q in question_starters):
+    if clean_text.endswith("?") or any(clean_text.startswith(q + " ") for q in question_starters):
         return "OLLAMA_QUERY", {"prompt": clean_text}
 
     return "UNCLEAR_SPEECH", {"raw": text}

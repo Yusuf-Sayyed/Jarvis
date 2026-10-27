@@ -187,5 +187,107 @@ class TestIntentDetection(unittest.TestCase):
         self.assertEqual(intent, "CANCEL_ACTION")
 
 
+    def test_terminal_command_variations(self):
+        # Specific natural variations required
+        terminal_variations = [
+            "Open terminal",
+            "Open a new terminal",
+            "Can you open new terminal?",
+            "Can you open a new terminal?",
+            "Can you open terminal?",
+            "Launch Konsole",
+            "Start terminal for me",
+            "start a terminal for me",
+            "open konsole",
+            "launch terminal",
+            "open a terminal",
+            "open console",
+        ]
+        for phrase in terminal_variations:
+            intent, params = detect_intent(phrase)
+            self.assertEqual(
+                intent,
+                "DESKTOP_ACTION",
+                f"Phrase '{phrase}' should route to DESKTOP_ACTION, got {intent}",
+            )
+            self.assertEqual(
+                params.get("action"),
+                "open_terminal",
+                f"Phrase '{phrase}' should trigger open_terminal, got {params}",
+            )
+
+        # Unrelated questions that must NOT trigger terminal action or overmatch
+        unrelated_queries = [
+            "Can you explain quantum computing?",
+            "Can you tell me what time it is?",
+            "Can you bake a cake?",
+            "What is a terminal illness?",
+            "Can you open a bank account?",
+        ]
+        for query in unrelated_queries:
+            intent, params = detect_intent(query)
+            self.assertNotEqual(
+                intent,
+                "DESKTOP_ACTION",
+                f"Unrelated query '{query}' should not route to DESKTOP_ACTION",
+            )
+            self.assertNotEqual(
+                params.get("action"),
+                "open_terminal",
+                f"Unrelated query '{query}' should never trigger open_terminal",
+            )
+
+    def test_media_controls_intent(self):
+        # 1. Polite pause request (Must not route to OLLAMA_QUERY)
+        intent, params = detect_intent("Is it possible for you to pause this video?")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "pause")
+
+        # 2. Direct pause
+        intent, params = detect_intent("Pause this video.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "pause")
+
+        # 3. Resume and Play
+        intent, params = detect_intent("Resume the video.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "resume")
+
+        intent, params = detect_intent("Continue playing.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "resume")
+
+        intent, params = detect_intent("Play.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "resume")
+
+        # 4. Stop
+        intent, params = detect_intent("Stop the video.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "stop")
+
+        # 5. Seek
+        intent, params = detect_intent("Skip forward.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "seek")
+        self.assertEqual(params.get("offset"), 10)
+
+        intent, params = detect_intent("Go back 10 seconds.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "seek")
+        self.assertEqual(params.get("offset"), -10)
+
+        # 6. Mute and Unmute
+        intent, params = detect_intent("Mute the video.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "mute")
+        self.assertTrue(params.get("mute_state"))
+
+        intent, params = detect_intent("Unmute the video.")
+        self.assertEqual(intent, "MEDIA_CONTROL")
+        self.assertEqual(params.get("action"), "mute")
+        self.assertFalse(params.get("mute_state"))
+
+
 if __name__ == "__main__":
     unittest.main()
