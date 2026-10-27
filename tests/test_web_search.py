@@ -336,6 +336,78 @@ class TestRouterCurrentInfoExecution(unittest.TestCase):
         self.assertIsNone(pending)
         self.assertIn("could not locate live information for your query", output)
 
+    def test_search_phrases_trigger_current_info_query(self):
+        cases = [
+            ("Search the web for Claude", "claude"),
+            ("Look up Claude", "claude"),
+            ("Search online for Claude", "claude"),
+            ("Web search Claude", "claude"),
+        ]
+        for utterance, expected_q in cases:
+            with self.subTest(utterance=utterance):
+                intent, params = detect_intent(utterance)
+                self.assertEqual(intent, "CURRENT_INFO_QUERY")
+                self.assertEqual(params.get("query"), expected_q)
+
+    def test_is_knowledge_gap_detection(self):
+        from intelligence.ollama_client import is_knowledge_gap
+        gap_examples = [
+            "Sir, I couldn't find any information on a known entity or concept named 'Claude.'",
+            "Sir, I'm afraid Claude is not a known entity within my current programming.",
+            "I do not have access to real-time information.",
+            "I suggest searching for information on the web.",
+        ]
+        for text in gap_examples:
+            with self.subTest(text=text):
+                self.assertTrue(is_knowledge_gap(text))
+
+        self.assertFalse(is_knowledge_gap("Photosynthesis is how plants produce glucose."))
+        self.assertFalse(is_knowledge_gap("Albert Einstein was a German physicist."))
+
+    @patch("core.router.ask_ollama")
+    @patch("intelligence.web_search.handle_current_info_query")
+    def test_ollama_knowledge_gap_bridges_to_web_search(self, mock_search, mock_ollama):
+        mock_ollama.return_value = "Sir, I couldn't find any information on a known entity named Claude."
+        mock_search.return_value = (
+            True,
+            "Claude is an advanced AI assistant created by Anthropic.",
+            [
+                WebSearchResult(
+                    title="Anthropic Claude Overview",
+                    snippet="Claude AI details.",
+                    url="https://anthropic.com/claude",
+                    date="Mon, 26 Oct 2026",
+                    source="anthropic.com",
+                )
+            ],
+        )
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            cont, pending = route_command("What is Claude?")
+            output = mock_stdout.getvalue()
+
+        self.assertTrue(cont)
+        self.assertIsNone(pending)
+        mock_search.assert_called_once_with("what is claude")
+        self.assertIn("Local intelligence lacks verified data on this entity. Consulting real-time web search", output)
+        self.assertIn("Claude is an advanced AI assistant created by Anthropic", output)
+        self.assertIn("https://anthropic.com/claude", output)
+
+    @patch("core.router.ask_ollama")
+    @patch("intelligence.web_search.handle_current_info_query")
+    def test_ollama_known_answer_does_not_call_web_search(self, mock_search, mock_ollama):
+        mock_ollama.return_value = "Photosynthesis is the process by which green plants produce glucose."
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            cont, pending = route_command("What is photosynthesis?")
+            output = mock_stdout.getvalue()
+
+        self.assertTrue(cont)
+        self.assertIsNone(pending)
+        mock_search.assert_not_called()
+        self.assertIn("Photosynthesis is the process by which green plants produce glucose", output)
+
 
 if __name__ == "__main__":
     unittest.main()
+

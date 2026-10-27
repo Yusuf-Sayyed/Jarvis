@@ -89,6 +89,27 @@ class TestMemoryStore(unittest.TestCase):
         # Default fallback
         self.assertEqual(self.store.get_preference("unknown_pref", "fallback_val"), "fallback_val")
 
+        # Test get_all_preferences
+        self.store.set_preference("user_name", "Yusuf")
+        self.store.set_preference("location", "India")
+        all_prefs = self.store.get_all_preferences()
+        self.assertIn("default_editor", all_prefs)
+        self.assertEqual(all_prefs["user_name"], "Yusuf")
+        self.assertEqual(all_prefs["location"], "India")
+
+    def test_extract_and_store_user_facts(self):
+        from core.router import extract_and_store_user_facts
+        facts = extract_and_store_user_facts("So, let me introduce myself to you, my name is Yusuf and I live in India.")
+        self.assertEqual(facts.get("user_name"), "Yusuf")
+        self.assertEqual(facts.get("location"), "India")
+
+    def test_get_system_prompt_with_memory(self):
+        from intelligence.ollama_client import get_system_prompt_with_memory
+        prompt = get_system_prompt_with_memory()
+        self.assertIn("JARVIS", prompt)
+        if "Yusuf" in prompt:
+            self.assertIn("Persistent User Knowledge", prompt)
+
     def test_list_and_clear_learned_entries(self):
         self.store.save_project("test_proj", "/tmp/test")
         self.store.save_learned_pattern("test phrase", "test_act", {})

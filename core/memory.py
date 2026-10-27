@@ -578,6 +578,14 @@ class MemoryStore:
                 return row["pref_value"]
         return default
 
+    def get_all_preferences(self) -> dict[str, str]:
+        """Returns all persistent user preferences as a key-value dictionary."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT pref_key, pref_value FROM user_preferences")
+            return {row["pref_key"]: row["pref_value"] for row in cursor.fetchall()}
+
+
     # --- Inspection & Management ---
 
     def list_learned_entries(self) -> dict[str, list[dict[str, Any]]]:

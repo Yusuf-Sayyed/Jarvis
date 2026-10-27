@@ -155,6 +155,16 @@ class TestIntentDetection(unittest.TestCase):
         intent, params = detect_intent("who built jarvis?")
         self.assertEqual(intent, "OLLAMA_QUERY")
 
+        # Conversational introductions and personal statements route to Ollama
+        intent, params = detect_intent("So, let me introduce myself to you, my name is Yusuf and I live in India.")
+        self.assertEqual(intent, "OLLAMA_QUERY")
+
+        intent, params = detect_intent("my name is Yusuf")
+        self.assertEqual(intent, "OLLAMA_QUERY")
+
+        intent, params = detect_intent("I live in India")
+        self.assertEqual(intent, "OLLAMA_QUERY")
+
         # Unclear noise/fillers must NOT route to Ollama
         intent, _ = detect_intent("um")
         self.assertEqual(intent, "UNCLEAR_SPEECH")

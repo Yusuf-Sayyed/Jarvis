@@ -35,6 +35,37 @@ UNCLEAR_NOISE = {
     "um", "uh", "ah", "the", "a", "an", "huh", "oh", "hmm", "and", "or", "so", "to"
 }
 
+RE_CONVERSATIONAL_STATEMENT = re.compile(
+    r"\b(?:"
+    r"my\s+name\s+is|"
+    r"call\s+me\s+[A-Za-z]+|"
+    r"let\s+me\s+introduce\s+myself|"
+    r"introduce\s+myself|"
+    r"nice\s+to\s+meet\s+you|"
+    r"pleased\s+to\s+meet\s+you|"
+    r"i\s+(?:live|reside)\s+in|"
+    r"i(?:\x27m|\s+am)\s+from|"
+    r"i(?:\x27m|\s+am)\s+(?:a\s+)?(?:young|old|developer|engineer|coder|student|designer|programmer)|"
+    r"\d{1,2}\s*(?:years?\s+old|yrs?\s+old)|"
+    r"remember\s+(?:that\s+)?my|"
+    r"remember\s+(?:that\s+)?i\b|"
+    r"remember\s+this|"
+    r"remember\s+me\b|"
+    r"remember\b|"
+    r"do\s+you\s+remember\b|"
+    r"who\s+am\s+i\b|"
+    r"what\s+is\s+my\s+name\b|"
+    r"where\s+do\s+i\s+live\b|"
+    r"how\s+old\s+am\s+i\b|"
+    r"what\s+do\s+you\s+know\s+about\s+me\b|"
+    r"hello\b|hi\b|hey\b|good\s+(?:morning|afternoon|evening|day)|"
+    r"thank\s+you|thanks(?:\s+a\s+lot)?|"
+    r"how\s+are\s+you|how(?:\x27s|\s+is)\s+it\s+going|how\s+do\s+you\s+do"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 # Media control patterns
 RE_MEDIA_PAUSE = re.compile(
     r"^(?:pause(?:\s+(?:the\s+|this\s+|current\s+)?(?:video|playback|media|song|track|movie|stream|firefox|youtube|vlc|spotify))?|pause|hold\s+on)$",
@@ -269,6 +300,9 @@ def parse_search_command(text: str) -> tuple[str | None, str | None]:
     m = re.match(r"^(?:open\s+(?:firefox|a\s+new\s+tab)\s+and\s+)?search\s+(?:for\s+)?(.*)$", cleaned)
     if m:
         raw_query = m.group(1).strip()
+        # If the search explicitly targets the web / online rather than a browser engine, delegate to web search
+        if re.match(r"^(?:the\s+web|online|the\s+internet)\b", raw_query, re.IGNORECASE):
+            return None, None
         engine = "google"
         if re.search(r"\b(?:on|in)\s+youtube$", raw_query):
             raw_query = re.sub(r"\b(?:on|in)\s+youtube$", "", raw_query).strip()
@@ -326,7 +360,11 @@ RE_CURRENT_INFO = re.compile(
     r"(?:today(?:'s)?|tonight(?:'s)?)\s+(?:news|headlines|weather|forecast|score|events?)|"
     r"(?:news|headlines|weather|forecast|score|events?)\s+(?:today|tonight|yesterday|right\s+now|currently)|"
     r"\b(?:today|right\s+now|currently|latest|breaking|recent\s+news)\b|"
-    r"\bcurrent\b(?!\s+(?:tab|window|folder|directory|interaction|app))"
+    r"\bcurrent\b(?!\s+(?:tab|window|folder|directory|interaction|app))|"
+    r"(?:search|look\s+up)\s+(?:the\s+web|online|the\s+internet)\s+for\b|"
+    r"(?:search|look\s+up)\s+for\s+(?:.+?)\s+(?:on|in)\s+(?:the\s+web|the\s+internet|online)\b|"
+    r"look\s+up\b|"
+    r"web\s+search\b"
     r")",
     re.IGNORECASE,
 )
@@ -509,7 +547,19 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
 
     # 8.8 Real-Time Web Search & Current Information Questions (Stage 5)
     if is_current_info_query(clean_text):
-        return "CURRENT_INFO_QUERY", {"query": clean_text, "raw": text}
+        query = clean_text
+        query = re.sub(
+            r"^(?:please\s+)?(?:can\s+you\s+)?(?:search\s+(?:the\s+web|online|the\s+internet)\s+(?:for\s+)?|"
+            r"search\s+for\s+|"
+            r"look\s+up\s+|"
+            r"web\s+search\s+for\s+|"
+            r"web\s+search\s+)",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        ).strip()
+        query = re.sub(r"\s+(?:on|in)\s+(?:the\s+web|the\s+internet|online)$", "", query, flags=re.IGNORECASE).strip()
+        return "CURRENT_INFO_QUERY", {"query": query or clean_text, "raw": text}
 
     # 9. Low-confidence / Unclear speech filtering (Prevents random noise from reaching Ollama)
     if clean_text in UNCLEAR_NOISE or len(clean_text) <= 2:
@@ -525,7 +575,9 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         or clean_text.endswith("?")
         or any(clean_text.startswith(q + " ") for q in question_starters)
     )
-    if is_question:
+    is_conversational = bool(RE_CONVERSATIONAL_STATEMENT.search(clean_text))
+
+    if is_question or is_conversational:
         return "OLLAMA_QUERY", {"prompt": clean_text}
 
     return "UNCLEAR_SPEECH", {"raw": text}

@@ -7,7 +7,70 @@ from actions.workflow import get_workflow_executor
 from core.context import get_conversation_context
 from core.intent import detect_intent
 from core.memory import get_memory_store
+import re
 from intelligence.ollama_client import ask_ollama
+
+
+def extract_and_store_user_facts(text: str) -> dict[str, str]:
+    """
+    Detects personal introductions, locations, and facts from spoken conversation,
+    and saves them to the persistent MemoryStore.
+    """
+    facts = {}
+    clean = text.strip()
+
+    # 1. Name: "my name is Yusuf", "call me Yusuf", "my name's Yusuf"
+    m_name = re.search(r"\b(?:my\s+name\s+is|my\s+name\'s|call\s+me)\s+([A-Za-z]+)", clean, re.IGNORECASE)
+    if m_name:
+        name = m_name.group(1).strip().capitalize()
+        if name.lower() not in ("jarvis", "a", "an", "the", "sir"):
+            facts["user_name"] = name
+
+    # 2. Location: "I live in India", "I'm from India", "I reside in India"
+    m_loc = re.search(r"\bi\s+(?:live|reside)\s+in\s+([A-Za-z\s]+?)(?:[.,]|\s+and\b|$)", clean, re.IGNORECASE)
+    if not m_loc:
+        m_loc = re.search(r"\bi(?:\x27m|\s+am)\s+from\s+([A-Za-z\s]+?)(?:[.,]|\s+and\b|$)", clean, re.IGNORECASE)
+    if m_loc:
+        loc = m_loc.group(1).strip().title()
+        if loc.lower() not in ("a", "an", "the", "here", "there"):
+            facts["location"] = loc
+
+    # 3. Age: e.g. "I am 23 years old", "I'm young and 23 yrs old", "I'm 23", "my age is 23"
+    m_age = re.search(r"\b(?:i(?:\x27m|\s+am)(?:\s+(?:a\s+)?(?:young|old))?\s+(?:and\s+)?|my\s+age\s+is\s+)(\d{1,2})\s*(?:years?\s+old|yrs?\s+old|yo)?\b", clean, re.IGNORECASE)
+    if not m_age:
+        m_age = re.search(r"\b(\d{1,2})\s*(?:years?\s+old|yrs?\s+old)\b", clean, re.IGNORECASE)
+    if m_age:
+        facts["age"] = m_age.group(1)
+
+    # 4. Profession/role: e.g. "I am a software engineer", "I'm a developer", "I work as a programmer"
+    m_prof = re.search(r"\bi(?:\x27m|\s+am)\s+(?:a|an)\s+([A-Za-z\s]+?)(?:[.,]|\s+and\b|$)", clean, re.IGNORECASE)
+    if m_prof:
+        prof = m_prof.group(1).strip()
+        if prof.lower() not in ("young", "old", "here", "there", "from", "guy", "man", "person"):
+            facts["occupation"] = prof.capitalize()
+
+    # 5. Explicit preferences: "remember that my favorite language is Python"
+    m_pref = re.search(r"\bremember\s+(?:that\s+)?my\s+([A-Za-z\s]+?)\s+is\s+([A-Za-z0-9\s]+?)(?:[.,]|$)", clean, re.IGNORECASE)
+    if m_pref:
+        pref_key = m_pref.group(1).strip().lower().replace(" ", "_")
+        pref_val = m_pref.group(2).strip()
+        facts[pref_key] = pref_val
+
+    # 6. General remember note: "remember that I am ..." or "remember I ..."
+    m_rem_iam = re.search(r"\bremember\s+(?:that\s+)?i(?:\x27m|\s+am)\s+(.+?)(?:[.,]|$)", clean, re.IGNORECASE)
+    if m_rem_iam and "age" not in facts and "occupation" not in facts:
+        facts["user_note"] = m_rem_iam.group(1).strip()
+
+
+    if facts:
+        try:
+            memory = get_memory_store()
+            for k, v in facts.items():
+                memory.set_preference(k, v)
+        except Exception:
+            pass
+
+    return facts
 
 
 def route_command(text: str, pending_action: str | None = None) -> tuple[bool, str | None]:
@@ -628,10 +691,35 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             print(f"\n[JARVIS Error] {answer}\n")
         return True, None
 
-    # 11. Ollama Fallback
+    # 11. Ollama Fallback with Automatic Real-Time Web Search Bridge & User Memory
     if intent == "OLLAMA_QUERY":
         prompt = params.get("prompt", text)
-        ask_ollama(prompt)
+        extract_and_store_user_facts(prompt or text)
+        from intelligence.ollama_client import is_knowledge_gap
+        answer = ask_ollama(prompt, print_output=False)
+        if answer and not is_knowledge_gap(answer):
+            print(f"\n[JARVIS]: \"{answer}\"\n")
+            return True, None
+
+        # If Ollama has a knowledge gap or is unavailable, bridge to real-time web search
+        print("[JARVIS] Local intelligence lacks verified data on this entity. Consulting real-time web search...")
+        from intelligence.web_search import handle_current_info_query
+        success, web_answer, results = handle_current_info_query(prompt)
+        if success and web_answer:
+            print(f"\n[JARVIS]: \"{web_answer}\"\n")
+            if results:
+                print("Sources:")
+                for idx, r in enumerate(results, 1):
+                    source_str = f" [{r.source}]" if r.source else ""
+                    date_str = f" ({r.date})" if r.date else ""
+                    print(f"  {idx}.{source_str} {r.title}{date_str}")
+                    print(f"     {r.url}")
+                print()
+        else:
+            if answer:
+                print(f"\n[JARVIS]: \"{answer}\"\n")
+            else:
+                print("\n[JARVIS] I could not find information locally or retrieve current web results, Sir.\n")
         return True, None
 
     return True, None
