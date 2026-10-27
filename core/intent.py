@@ -137,13 +137,18 @@ def normalize_spoken_text(text: str) -> str:
     text = re.sub(r"\bthis\s+tap\b", "this tab", text)
     text = re.sub(r"\bcurrent\s+tap\b", "current tab", text)
     text = re.sub(r"\bnext\s+tap\b", "next tab", text)
+    text = re.sub(r"\b(?:lens\s*(?:5|five|fy|ify|i\s*fy|if\s*i)|lensi+fy)\b", "lensify", text, flags=re.IGNORECASE)
 
     # Strip trailing punctuation
     text = text.rstrip(".?!,").strip()
 
+    # Strip leading wake words ("jarvis,", "hey jarvis,", etc.)
+    text = re.sub(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?jarvis\s*[,:]?\s*", "", text, flags=re.IGNORECASE).strip()
+
     # Strip conversational prefixes ("can you", "please", "could you", etc.)
     cleaned = re.sub(CONVERSATIONAL_PREFIXES, "", text).strip()
-    return cleaned
+    result = (cleaned if cleaned else text).rstrip(".?!,").strip()
+    return result
 
 
 def sanitize_search_query(query: str) -> str:
@@ -495,7 +500,7 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         return "DESKTOP_ACTION", {"action": "open_youtube"}
 
     # 8.5 Natural-Language Smart Intent & Learned Workflow Routing
-    smart = extract_smart_intent(text)
+    smart = extract_smart_intent(clean_text)
     if smart:
         return "SMART_ACTION", smart
 
@@ -512,7 +517,12 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         "what", "how", "why", "who", "when", "where", "is", "are", "can", "could",
         "would", "will", "tell", "explain", "do", "does", "which"
     )
-    if clean_text.endswith("?") or any(clean_text.startswith(q + " ") for q in question_starters):
+    is_question = (
+        bool(re.search(r"\?\s*$", text))
+        or clean_text.endswith("?")
+        or any(clean_text.startswith(q + " ") for q in question_starters)
+    )
+    if is_question:
         return "OLLAMA_QUERY", {"prompt": clean_text}
 
     return "UNCLEAR_SPEECH", {"raw": text}

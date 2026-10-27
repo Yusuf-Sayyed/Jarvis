@@ -30,6 +30,19 @@ class TestWakeWord(unittest.TestCase):
         self.assertFalse(has_wake)
         self.assertEqual(cmd, "open firefox")
 
+        # Whisper comma and punctuation variations
+        has_wake, cmd = extract_wake_command("Jarvis, how can I create a workflow?")
+        self.assertTrue(has_wake)
+        self.assertEqual(cmd, "how can I create a workflow?")
+
+        has_wake, cmd = extract_wake_command("Hey Jarvis, pause the video.")
+        self.assertTrue(has_wake)
+        self.assertEqual(cmd, "pause the video.")
+
+        has_wake, cmd = extract_wake_command("Jarvis:")
+        self.assertTrue(has_wake)
+        self.assertEqual(cmd, "")
+
     def test_time_formatting(self):
         self.assertEqual(format_time_remaining(300), "5m 00s")
         self.assertEqual(format_time_remaining(272), "4m 32s")

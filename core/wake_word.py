@@ -2,6 +2,7 @@
 Wake-word detection, session state tracking, and timer management.
 """
 
+import re
 import time
 from core.config import SESSION_TIMEOUT_SECONDS, WAKE_WORDS
 
@@ -9,23 +10,37 @@ from core.config import SESSION_TIMEOUT_SECONDS, WAKE_WORDS
 def extract_wake_command(text: str) -> tuple[bool, str]:
     """
     Checks if an utterance contains any configured wake word.
+    Handles punctuation (commas, colons) that speech-to-text models like Whisper insert.
 
     Returns:
         (True, remaining_command) if a wake word was found.
         (False, original_text) if no wake word was found.
     """
-    cleaned = text.lower().strip()
-    for wake in WAKE_WORDS:
-        if cleaned == wake:
-            return True, ""
-        if cleaned.startswith(wake + " "):
-            return True, cleaned[len(wake) + 1:].strip()
-        if cleaned.endswith(" " + wake):
-            return True, cleaned[:-len(wake) - 1].strip()
-        if f" {wake} " in cleaned:
-            parts = cleaned.split(f" {wake} ", 1)
-            remaining = (parts[0] + " " + parts[1]).strip()
-            return True, remaining
+    cleaned = text.strip()
+    sorted_wakes = sorted(WAKE_WORDS, key=len, reverse=True)
+    for wake in sorted_wakes:
+        # Pattern 1: Wake word at start with optional trailing comma, colon, or punctuation
+        p_start = re.compile(rf"^{re.escape(wake)}[,:\.]?\s*(.*)$", re.IGNORECASE)
+        m = p_start.match(cleaned)
+        if m:
+            rem = m.group(1).strip().lstrip(",:; ").strip()
+            return True, rem
+
+        # Pattern 2: Wake word at end with optional preceding comma
+        p_end = re.compile(rf"^(.*?)[,:\.]?\s*{re.escape(wake)}[,:\.\?!]*$", re.IGNORECASE)
+        m = p_end.match(cleaned)
+        if m and m.group(1).strip():
+            rem = m.group(1).strip().rstrip(",:; ").strip()
+            return True, rem
+
+        # Pattern 3: Wake word in the middle
+        p_mid = re.compile(rf"^(.*?)[,:\.]?\s*{re.escape(wake)}[,:\.]?\s+(.*)$", re.IGNORECASE)
+        m = p_mid.match(cleaned)
+        if m:
+            left = m.group(1).strip().rstrip(",:; ").strip()
+            right = m.group(2).strip().lstrip(",:; ").strip()
+            return True, f"{left} {right}".strip()
+
     return False, text
 
 

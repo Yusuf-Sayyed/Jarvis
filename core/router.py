@@ -208,6 +208,15 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 print()
             return True, None
 
+        # Workflow Help & Teaching Instructions
+        if smart_action == "workflow_help":
+            print(
+                '\n[JARVIS] "To teach me a workflow, Sir, say: \'When I say [trigger phrase], [action 1] and [action 2]\'. '
+                'For example: \'When I say start working on Lensify, open Lensify in my editor and open a terminal in that project folder.\' '
+                'I will validate the actions, confirm the setup, and save it to your memory for automatic execution."\n'
+            )
+            return True, None
+
         # Workflow Management: Inspect
         if smart_action == "inspect_workflow":
             target = smart_params.get("workflow_name", "")

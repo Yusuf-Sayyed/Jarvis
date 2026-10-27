@@ -588,8 +588,54 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(res["params"]["name"], "Code Lensify")
         self.assertTrue(res["params"]["from_ollama"])
 
+    def test_workflow_help_queries(self):
+        from core.intent import detect_intent
+        queries = [
+            "how can I create a workflow?",
+            "how do I teach you a workflow?",
+            "how to create a workflow",
+            "how do workflows work",
+            "Jarvis, how can I create a workflow?",
+        ]
+        for q in queries:
+            intent, params = detect_intent(q)
+            self.assertEqual(intent, "SMART_ACTION", f"Failed for query: {q}")
+            self.assertEqual(params.get("action"), "workflow_help", f"Failed action for: {q}")
+
+        # Ensure router handles workflow_help without error
+        should_cont, pending = route_command("how can I create a workflow?")
+        self.assertTrue(should_cont)
+        self.assertIsNone(pending)
+
+    @patch("actions.resolver.DirectoryResolver.resolve_project_directory")
+    def test_teach_workflow_editor_and_antigravity_aliases(self, mock_dir_resolve):
+        mock_dir_resolve.return_value = ("/home/yusuf/Desktop/Lensify", ["/home/yusuf/Desktop/Lensify"])
+        from intelligence.intent_extractor import extract_smart_intent
+
+        # 1. anti-gravity editor
+        intent1 = extract_smart_intent("When I say start working on Lensify, open Lensify in my anti-gravity editor.")
+        self.assertIsNotNone(intent1)
+        self.assertEqual(intent1["action"], "teach_workflow")
+        self.assertEqual(intent1["params"]["trigger"], "start working on lensify")
+        self.assertEqual(len(intent1["params"]["steps"]), 1)
+        step1 = intent1["params"]["steps"][0]
+        self.assertEqual(step1["action"], "open_project")
+        self.assertEqual(step1["params"]["project"], "lensify")
+        self.assertIn("Antigravity", step1["params"]["app"])
+
+        # 2. phonetic "lens 5" -> "lensify" and "my editor"
+        intent2 = extract_smart_intent("When I say start working on lens 5, open lens 5 in my editor.")
+        self.assertIsNotNone(intent2)
+        self.assertEqual(intent2["action"], "teach_workflow")
+        self.assertEqual(intent2["params"]["trigger"], "start working on lensify")
+        step2 = intent2["params"]["steps"][0]
+        self.assertEqual(step2["action"], "open_project")
+        self.assertEqual(step2["params"]["project"], "lensify")
+        self.assertIn("Antigravity", step2["params"]["app"])
+
 
 if __name__ == "__main__":
     import json
     unittest.main()
+
 

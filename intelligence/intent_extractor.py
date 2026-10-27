@@ -36,8 +36,10 @@ CONVERSATIONAL_PREFIXES = (
 
 def _clean_input(text: str) -> str:
     cleaned = text.lower().strip().rstrip(".?!,").strip()
+    cleaned = re.sub(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?jarvis\s*[,:]?\s*", "", cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(CONVERSATIONAL_PREFIXES, "", cleaned).strip()
-    return cleaned
+    cleaned = re.sub(r"\b(?:lens\s*(?:5|five|fy|ify|i\s*fy|if\s*i)|lensi+fy)\b", "lensify", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned.rstrip(".?!,").strip()
 
 
 # Workflow chaining & teaching
@@ -82,6 +84,17 @@ RE_DELETE_WORKFLOW = re.compile(
 )
 RE_RENAME_WORKFLOW = re.compile(
     r"^rename\s+(?:the\s+)?workflow\s*[,:]?\s*(?:named\s+|called\s+)?['\"]?(.+?)['\"]?\s+to\s+['\"]?(.+?)['\"]?$",
+    re.IGNORECASE,
+)
+RE_HELP_WORKFLOW = re.compile(
+    r"^(?:"
+    r"how\s+(?:can\s+i|do\s+i|to)\s+(?:create|make|teach|add|set\s+up|save)\s+(?:a\s+|new\s+)?workflows?|"
+    r"how\s+(?:do\s+i|can\s+i|to)\s+teach\s+(?:you\s+)?(?:a\s+)?workflows?|"
+    r"how\s+do\s+workflows\s+work|"
+    r"how\s+(?:to\s+use|can\s+i\s+use|do\s+i\s+use)\s+workflows?|"
+    r"workflow\s+help|"
+    r"help\s+(?:with\s+)?workflows?"
+    r")$",
     re.IGNORECASE,
 )
 
@@ -753,6 +766,9 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
     if RE_LIST_WORKFLOWS.match(clean_text):
         return {"action": "list_workflows", "params": {}}
 
+    if RE_HELP_WORKFLOW.match(clean_text):
+        return {"action": "workflow_help", "params": {}}
+
     m_insp = RE_INSPECT_WORKFLOW.match(clean_text)
     if m_insp:
         target_name = (m_insp.group(1) or m_insp.group(2)).strip().strip("'\"").rstrip(".?!,").strip()
@@ -897,20 +913,42 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
         c2 = re.sub(r"^(?:my\s+|the\s+)", "", p2.lower().strip())
         c2_clean = re.sub(r"(?:\s+(?:project|folder|directory|repo))+$", "", c2).strip()
 
-        has_proj_indicator_2 = bool(re.search(r"(?:\s+(?:project|folder|directory|repo))+$", c2)) or p2.lower().strip().startswith("my ")
-        has_proj_indicator_1 = bool(re.search(r"(?:\s+(?:project|folder|directory|repo))+$", c1)) or p1.lower().strip().startswith("my ")
-
-        from actions.resolver import get_app_registry
+        from actions.resolver import get_app_registry, get_directory_resolver
         app_registry = get_app_registry()
+        dir_resolver = get_directory_resolver()
+
         app1 = app_registry.resolve_application(c1_clean)
         app2 = app_registry.resolve_application(c2_clean)
 
-        if (has_proj_indicator_2 and not has_proj_indicator_1) or (app1 and not app2):
+        explicit_folder_1 = bool(re.search(r"\b(?:project|folder|directory|repo)\b", c1))
+        explicit_folder_2 = bool(re.search(r"\b(?:project|folder|directory|repo)\b", c2))
+
+        if app2 and not app1:
+            # "open <project> in <app>" (e.g. "open Lensify in my editor", "open Lensify in anti-gravity editor")
+            proj = c1_clean
+            app = c2_clean
+        elif app1 and not app2:
+            # "open <app> in <project>" (e.g. "open terminal in Lensify", "open Konsole in my project folder")
+            app = c1_clean
+            proj = c2_clean
+        elif explicit_folder_1 and not explicit_folder_2:
+            proj = c1_clean
+            app = c2_clean
+        elif explicit_folder_2 and not explicit_folder_1:
             app = c1_clean
             proj = c2_clean
         else:
-            proj = c1_clean
-            app = c2_clean
+            dir1, _ = dir_resolver.resolve_project_directory(c1_clean)
+            dir2, _ = dir_resolver.resolve_project_directory(c2_clean)
+            if dir1 and not dir2:
+                proj = c1_clean
+                app = c2_clean
+            elif dir2 and not dir1:
+                app = c1_clean
+                proj = c2_clean
+            else:
+                proj = c1_clean
+                app = c2_clean
 
         return {"action": "open_project", "params": {"project": proj, "app": app}, "from_cache": False}
 

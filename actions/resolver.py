@@ -35,7 +35,12 @@ class AppRegistry:
     def _init_curated_aliases(self):
         """Hardcoded base aliases for key Fedora KDE desktop tools."""
         self._curated_aliases = {
-            "antigravity": ["antigravity", "antigravity ide", "ide", "editor", "code", "vs code", "vscode"],
+            "antigravity": [
+                "antigravity", "antigravity ide", "anti-gravity", "anti gravity",
+                "anti-gravity ide", "anti gravity ide", "anti-gravity editor",
+                "anti gravity editor", "antigravity editor",
+                "ide", "editor", "code", "vs code", "vscode"
+            ],
             "konsole": ["konsole", "terminal", "console"],
             "firefox": ["firefox", "browser", "web browser"],
             "dolphin": ["dolphin", "files", "file manager"],
@@ -169,6 +174,8 @@ class DirectoryResolver:
         # Clean phrases like "my lensify project", "lensify project folder"
         clean_name = re.sub(r"^(?:my\s+|the\s+)", "", clean_name)
         clean_name = re.sub(r"(?:\s+(?:project|folder|directory|repo))+$", "", clean_name).strip()
+        # Repair common speech phonetic variants (e.g. "lens 5" -> "lensify")
+        clean_name = re.sub(r"\b(?:lens\s*(?:5|five|fy|ify|i\s*fy|if\s*i)|lensi+fy)\b", "lensify", clean_name, flags=re.IGNORECASE).strip()
 
         # 1. Check memory store first (< 1ms fast-path)
         cached = self.memory.get_project(clean_name)
