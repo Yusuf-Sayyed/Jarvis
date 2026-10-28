@@ -3,6 +3,7 @@ Wake-word detection, multi-trigger handling, session state tracking,
 and activation greeting management.
 """
 
+import os
 import re
 import time
 from typing import Tuple
@@ -144,6 +145,59 @@ def reset_greeting_state():
     """Resets greeting rotation index (used in tests)."""
     global _LAST_GREETING_INDEX
     _LAST_GREETING_INDEX = -1
+
+
+def get_startup_greeting(hour: int | None = None) -> str:
+    """
+    Returns a time-aware Tony Stark-style greeting for desktop startup.
+    Example: "Good morning, Sir. Systems are online. What shall we work on today?"
+    """
+    if hour is None:
+        hour = time.localtime().tm_hour
+
+    if 5 <= hour < 12:
+        return "Good morning, Sir. Systems are online. What shall we work on today?"
+    elif 12 <= hour < 17:
+        return "Good afternoon, Sir. Systems are online. How may I assist you today?"
+    elif 17 <= hour < 22:
+        return "Good evening, Sir. Systems are online. Standing by for your instructions."
+    else:
+        return "Good evening, Sir. Working late tonight. Systems are online and standing by."
+
+
+def _get_login_greeted_marker_path() -> str:
+    """
+    Returns path to the login-session greeting marker file located in $XDG_RUNTIME_DIR.
+    $XDG_RUNTIME_DIR is created per login session and wiped upon desktop logout/reboot.
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and os.path.isdir(runtime_dir):
+        return os.path.join(runtime_dir, "jarvis_login_greeted")
+    return f"/tmp/jarvis_login_greeted_{os.getuid()}"
+
+
+def has_greeted_this_login_session() -> bool:
+    """Checks whether the startup greeting was already spoken in this desktop login session."""
+    return os.path.exists(_get_login_greeted_marker_path())
+
+
+def mark_greeted_this_login_session() -> None:
+    """Records that the startup greeting has been spoken for the current desktop login session."""
+    try:
+        with open(_get_login_greeted_marker_path(), "w") as f:
+            f.write(f"{time.time()}\n")
+    except Exception:
+        pass
+
+
+def clear_login_session_greeting() -> None:
+    """Clears the session greeting marker (useful for test resets)."""
+    p = _get_login_greeted_marker_path()
+    try:
+        if os.path.exists(p):
+            os.remove(p)
+    except Exception:
+        pass
 
 
 def format_time_remaining(seconds: float) -> str:

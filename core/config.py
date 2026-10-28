@@ -2,6 +2,7 @@
 Configuration settings and constants for JARVIS.
 """
 
+import os
 from pathlib import Path
 
 # Paths
@@ -26,9 +27,9 @@ TTS_ENGINE = "auto"  # "auto" prioritizes kokoro, then piper, falling back to es
 # Kokoro Neural TTS Settings (Natural British English Voice)
 KOKORO_MODEL_PATH = BASE_DIR / "models" / "kokoro" / "kokoro-v1.0.onnx"
 KOKORO_VOICES_PATH = BASE_DIR / "models" / "kokoro" / "voices-v1.0.bin"
-KOKORO_VOICE = "bm_george"
+KOKORO_VOICE = "bm_fable"
 KOKORO_LANG = "en-gb"
-KOKORO_SPEED = 0.95
+KOKORO_SPEED = 1.15
 
 # Piper Neural TTS Settings (Preserved fallback)
 PIPER_BIN_PATH = BASE_DIR / "bin" / "piper"
@@ -38,7 +39,10 @@ PIPER_MODEL_PATH = BASE_DIR / "models" / "piper" / "en_GB-alan-medium.onnx"
 TTS_ESPEAK_VOICE = "en-gb-x-rp"         # Stable British English Received Pronunciation
 TTS_ESPEAK_SPEED = 150                  # Natural measured assistant cadence (WPM)
 TTS_ESPEAK_PITCH = 50                   # Center resonant pitch (prevents formant breaking/distortion)
-TTS_DIAGNOSTICS = True                  # Concise TTS pipeline diagnostics (engine, duration, player, timing)
+# Logging & Diagnostics Configuration
+# LOG_LEVEL: "INFO" (concise normal mode) or "DEBUG" (full TTS/pipeline diagnostics)
+LOG_LEVEL = os.environ.get("JARVIS_LOG_LEVEL", "INFO").upper()
+TTS_DIAGNOSTICS = (LOG_LEVEL == "DEBUG") or os.environ.get("JARVIS_DEBUG", "").lower() in ("1", "true", "yes")
 POST_SPEECH_COOLDOWN_SECONDS = 0.5      # 500ms post-speech cooldown to suppress room reverb feedback
 TTS_MAX_TIMEOUT_SECONDS = 25.0          # Safety timeout preventing indefinite audio lock
 
@@ -95,13 +99,16 @@ OLLAMA_API_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2:3b"
 
 JARVIS_SYSTEM_PROMPT = (
-    "You are JARVIS, a concise and intelligent AI assistant inspired by Tony Stark's assistant. "
-    "Always identify yourself as JARVIS if asked. Speak politely and calmly, occasionally addressing the user as 'Sir'. "
-    "Keep answers brief (1 to 3 sentences maximum), suitable for a voice interface. "
-    "Do not output Markdown formatting or code blocks unless explicitly requested. "
-    "Answer general knowledge, factual, technical, and conversational questions accurately and helpfully using your knowledge. "
+    "You are JARVIS, a calm, helpful, natural, and intelligent AI companion inspired by Tony Stark's assistant. "
+    "You have a subtle, witty, and loyal personality. Engage naturally in conversations, discuss ideas, and offer helpful guidance. "
+    "Address the user occasionally as 'Sir', but do not repeat it in every sentence. "
+    "Never say 'I beg your pardon' or ask the user to repeat themselves when their speech is understandable. "
+    "IMPORTANT: Keep spoken responses small and like a brief summary by default (1 to 2 short sentences maximum). "
+    "Only provide detailed explanations if the user explicitly asks for detail (e.g. 'in detail', 'explain in detail', 'give me more details', 'elaborate'). "
+    "Never use markdown formatting, bullets, or code blocks in spoken responses. "
+    "Never claim to have created files, edited files, or executed computer actions unless an action handler has explicitly confirmed it. "
     "You operate as part of a Python voice assistant on Fedora KDE Linux with support for desktop navigation, media playback, custom workflows, and real-time web search. "
-    "Only if the user asks you to perform an unsupported computer command or control an unsupported application, explain politely that the capability has not been programmed yet."
+    "If the user asks you to perform an unsupported computer command, explain politely that the capability has not been programmed yet."
 )
 
 

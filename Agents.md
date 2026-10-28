@@ -1,93 +1,44 @@
-Issue 1: False two-clap detection
+Set up my existing JARVIS assistant to start automatically when I log in to my Fedora KDE desktop, so I never need to open a terminal to launch it manually.
 
-Current log:
-[ACTIVE] Two claps detected! "Hello, Sir. How can I help you?"
+First inspect my existing project at `~/jarvis`. Identify the correct Python entry point, virtual environment, configuration, and startup requirements. Do not guess paths or create a duplicate assistant.
 
-JARVIS activates without me intentionally clapping.
+Requirements:
 
-Trace the exact clap detection logic and identify why it triggers falsely.
+1. **Automatic startup**
+   - Configure a systemd user service that starts JARVIS after my graphical desktop session is available.
+   - Use the existing project and its correct virtual environment.
+   - Run it as my normal user, never as root.
+   - Configure restart-on-failure with a reasonable delay, without creating a rapid restart loop.
+   - Ensure it starts only once.
+   - Make it easy to check status, stop, restart, and disable the service.
+   - Do not require an open Konsole window.
 
-Check whether speech, microphone startup noise, TTS playback, buffer boundaries, or ordinary background sounds are being counted as claps.
+2. **Tony Stark-style greeting**
+   - After the desktop session and required audio devices are ready, speak a short greeting through the existing Kokoro TTS voice (`bm_fable`).
+   - Example: "Good morning, Sir. Systems are online. What shall we work on today?"
+   - Choose the greeting based on local time where practical.
+   - Greet only once per login/session, not on every service restart.
+   - Do not start speaking before the audio system is ready.
+   - If speech fails, log the error without crashing JARVIS.
 
-Add a configurable clap detector with stricter thresholds and a short, sharp acoustic-impulse requirement.
+3. **Preserve existing functionality**
+   - Keep the existing wake phrase, five-minute active listening session, Whisper/VAD, memory, workflows, Ollama, desktop actions, and media controls.
+   - Prevent JARVIS from transcribing its own greeting.
+   - Avoid loading duplicate AI models or starting duplicate listeners.
+   - Do not change the current voice or download any models.
 
-Require two distinct qualifying peaks within the configured interval, with appropriate minimum separation and noise-floor checks.
+4. **Privacy and reliability**
+   - Start after I log in, not at the login screen.
+   - Keep microphone use and listening status clear.
+   - Do not run as root or weaken system security.
+   - Keep logs available through `journalctl --user`.
+   - Do not make JARVIS automatically execute risky actions on startup.
 
-Reject continuous speech, a single clap, keyboard typing where feasible, and JARVIS's own TTS audio.
+5. **Implementation**
+   - Back up files before modifying them.
+   - Create and enable the user service only after verifying its command and paths.
+   - Test the service, greeting, logs, and restart behavior.
+   - Report the exact files changed and commands to check status, restart, stop, and disable automatic startup.
+   - Do not claim startup works unless it was actually tested.
 
-Calibrate against recent background audio instead of relying on a fixed low threshold.
-
-Do not print "Two claps detected" or activate the session until both clap events have actually passed validation.
-
-Add a temporary configuration switch to disable clap activation immediately if it remains unreliable.
-
-Add diagnostic logging showing candidate peaks and rejection reasons, without dumping raw audio.
-
-Test silence, normal speech, one clap, two deliberate claps, and TTS playback. Do not claim these physical tests passed unless actually performed.
-
-Keep voice wake phrases working even if clap detection is disabled.
-
-
-# Integrate Piper Neural TTS into JARVIS
-
-I want to replace the current eSpeak NG voice with a natural-sounding Piper neural voice. My project is in `~/jarvis` on Fedora KDE Linux, with 16 GB RAM and an Intel i7-1360P CPU.
-
-Current TTS diagnostics:
-- Engine: `espeak-ng`
-- Voice: `en-gb-x-rp`
-- Pitch: 50
-- Speed: 150
-- Output: 22050 Hz mono WAV
-- Playback: `pw-play`
-
-The current voice sounds robotic, distorted, or crackly.
-
-## 1. Inspect before changing anything
-- Inspect `interfaces/speech.py`, `core/config.py`, and the current TTS/playback implementation.
-- Identify how speech is synthesized, played, serialized, and cleaned up.
-- Back up files before editing.
-- Preserve the existing speech interface so the rest of JARVIS does not need to change.
-
-## 2. Choose a suitable Piper voice
-- Verify the currently maintained Piper project and installation instructions.
-- Choose a lightweight, natural-sounding English voice with clear pronunciation and a polished assistant-like tone.
-- Prefer a British English voice if a suitable model is available; otherwise recommend the best natural English alternative.
-- Check the model file size, required companion files, license, dependencies, and expected CPU/RAM use.
-- Report the selected voice and approximate download size before downloading it.
-- Do not use cloud TTS or paid APIs.
-
-## 3. Install and integrate Piper
-- Use the project's existing virtual environment where appropriate.
-- Install a compatible, maintained Piper implementation using its official instructions.
-- Download the chosen voice only after verifying its source and reporting its size.
-- Store model files in a dedicated directory such as `~/jarvis/models/piper/`.
-- Update the existing speech interface to use Piper while preserving its public methods.
-- Keep eSpeak available as a configurable fallback if Piper fails.
-- Do not load duplicate models or initialize Piper repeatedly for each sentence.
-- Avoid blocking the microphone/listener unnecessarily.
-
-## 4. Fix playback quality
-- Verify the generated WAV's actual sample rate, channels, sample format, duration, and amplitude.
-- Play the generated audio with `pw-play` using the correct format.
-- Prevent overlapping playback, premature file deletion, clipping, and corrupted buffers.
-- Keep the TTS speaking lock and microphone pause/buffer-clearing behavior so JARVIS does not hear its own greeting.
-- Do not assume playback is correct just because the process exits successfully.
-
-## 5. Test
-- Generate a standalone WAV saying: "Hello, Sir. How can I help you?"
-- Provide the exact command to play it independently.
-- Test short and long sentences, punctuation, repeated calls, and fallback behavior.
-- Run relevant automated tests and preserve existing wake-word, clap, memory, workflow, and command functionality.
-- Do not claim I have heard or approved the voice. Ask me to listen and confirm its quality.
-
-## 6. Final report
-Tell me:
-- Which Piper model and voice were selected.
-- Where the model files were stored.
-- What was installed or changed.
-- The exact command to test the WAV.
-- Which automated tests actually passed.
-- Whether eSpeak fallback works.
-- Any manual steps still needed.
-
-Make the smallest safe change. Do not rewrite the project or download additional models without a clear reason.
+Make the smallest reliable changes to my existing project. Explain any step that requires my approval or manual action.

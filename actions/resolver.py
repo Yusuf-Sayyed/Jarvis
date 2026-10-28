@@ -134,10 +134,45 @@ class AppRegistry:
                 for a in aliases:
                     self._apps[a.lower().strip()] = app_info
 
+    def get_default_browser(self) -> Optional[AppInfo]:
+        """Resolves the system configured default web browser or falls back to Firefox."""
+        self.scan_applications()
+        # 1. Try xdg-settings
+        try:
+            cmd = shutil.which("xdg-settings")
+            if cmd:
+                res = subprocess.run([cmd, "get", "default-web-browser"], capture_output=True, text=True, timeout=1.0)
+                if res.returncode == 0 and res.stdout.strip():
+                    desktop_id = res.stdout.strip().lower()
+                    clean_id = re.sub(r"\.desktop$", "", desktop_id)
+                    for app in self._apps.values():
+                        if app.desktop_file and desktop_id in os.path.basename(app.desktop_file).lower():
+                            return app
+                        if clean_id in os.path.basename(app.exec_path).lower():
+                            return app
+        except Exception:
+            pass
+
+        # 2. Check BROWSER environment variable
+        env_browser = os.environ.get("BROWSER")
+        if env_browser:
+            resolved = self.resolve_application(env_browser)
+            if resolved:
+                return resolved
+
+        # 3. Fall back to curated alias 'browser' or 'firefox'
+        return self._apps.get("browser") or self._apps.get("firefox")
+
     def resolve_application(self, spoken_name: str) -> Optional[AppInfo]:
         """Resolves a spoken application query to an installed AppInfo."""
         self.scan_applications()
         clean = spoken_name.lower().strip()
+
+        # Check default browser explicitly
+        if clean in ("browser", "web browser", "default browser", "the browser"):
+            default_browser = self.get_default_browser()
+            if default_browser:
+                return default_browser
 
         # Check direct alias/name match
         if clean in self._apps:

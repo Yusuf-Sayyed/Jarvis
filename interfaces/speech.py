@@ -44,15 +44,16 @@ try:
     try:
         from kokoro_onnx import Kokoro as _KokoroClass
     except ImportError:
-        kokoro_pkg = (
-            BASE_DIR
-            / ".venv-kokoro"
-            / "lib"
-            / f"python{sys.version_info.major}.{sys.version_info.minor}"
-            / "site-packages"
-        )
-        if kokoro_pkg.is_dir() and str(kokoro_pkg) not in sys.path:
-            sys.path.append(str(kokoro_pkg))
+        for _v in (".venv", ".venv-kokoro"):
+            kokoro_pkg = (
+                BASE_DIR
+                / _v
+                / "lib"
+                / f"python{sys.version_info.major}.{sys.version_info.minor}"
+                / "site-packages"
+            )
+            if kokoro_pkg.is_dir() and str(kokoro_pkg) not in sys.path:
+                sys.path.append(str(kokoro_pkg))
         from kokoro_onnx import Kokoro as _KokoroClass
 except Exception:
     _KokoroClass = None
@@ -72,6 +73,7 @@ class _SpeechJob:
     success: bool = False
     error: Optional[str] = None
     duration: float = 0.0
+    enqueued_at: float = field(default_factory=time.perf_counter)
 
 
 _SPEECH_QUEUE: queue.Queue[_SpeechJob] = queue.Queue()
@@ -81,9 +83,24 @@ _ACTIVE_PROC: Optional[subprocess.Popen] = None
 _ACTIVE_JOB: Optional[_SpeechJob] = None
 
 
-def _log_diag(msg: str):
-    """Prints concise diagnostic logging when TTS_DIAGNOSTICS is enabled."""
-    if TTS_DIAGNOSTICS and not os.environ.get("JARVIS_TEST_MODE"):
+def _log_diag(msg: str, is_error: bool = False, is_warning: bool = False):
+    """
+    Diagnostic logger.
+    Detailed timings, sample counts, PIDs, and sentence metrics are restricted to DEBUG mode.
+    Useful warnings and errors remain visible.
+    """
+    from core import config
+    is_debug = getattr(config, "LOG_LEVEL", "INFO") == "DEBUG" or getattr(config, "TTS_DIAGNOSTICS", False)
+
+    if os.environ.get("JARVIS_TEST_MODE") and not (is_debug or os.environ.get("JARVIS_DEBUG")):
+        if not (is_error or is_warning):
+            return
+
+    if is_error:
+        print(f"[TTS Error] {msg}")
+    elif is_warning:
+        print(f"[TTS Warning] {msg}")
+    elif is_debug:
         print(f"[TTS Diagnostic] {msg}")
 
 
@@ -207,15 +224,16 @@ def get_kokoro_engine():
                 try:
                     from kokoro_onnx import Kokoro as cls
                 except ImportError:
-                    kokoro_pkg = (
-                        BASE_DIR
-                        / ".venv-kokoro"
-                        / "lib"
-                        / f"python{sys.version_info.major}.{sys.version_info.minor}"
-                        / "site-packages"
-                    )
-                    if kokoro_pkg.is_dir() and str(kokoro_pkg) not in sys.path:
-                        sys.path.append(str(kokoro_pkg))
+                    for _v in (".venv", ".venv-kokoro"):
+                        kokoro_pkg = (
+                            BASE_DIR
+                            / _v
+                            / "lib"
+                            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+                            / "site-packages"
+                        )
+                        if kokoro_pkg.is_dir() and str(kokoro_pkg) not in sys.path:
+                            sys.path.append(str(kokoro_pkg))
                     from kokoro_onnx import Kokoro as cls
 
             _log_diag(
@@ -226,7 +244,7 @@ def get_kokoro_engine():
             _log_diag(f"Kokoro TTS initialized in {time.perf_counter() - t0:.2f}s")
             return _KOKORO_ENGINE
         except Exception as e:
-            _log_diag(f"Failed to initialize Kokoro TTS: {e}")
+            _log_diag(f"Failed to initialize Kokoro TTS: {e}", is_error=True)
             return None
 
 
@@ -269,21 +287,65 @@ def _synthesize_kokoro(text: str, wav_path: str) -> bool:
         )
         gen_time = time.perf_counter() - t0
 
-        audio = np.asarray(audio, dtype=np.float32).squeeze()
-        if audio.ndim != 1 or audio.size == 0:
+        if not isinstance(sample_rate, (int, np.integer)) or sample_rate <= 0:
+            _log_diag(f"Kokoro returned invalid sample rate: {sample_rate}")
+            if os.path.exists(wav_path):
+                try:
+                    os.unlink(wav_path)
+                except Exception:
+                    pass
+            return False
+
+        if isinstance(audio, (list, tuple)):
+            clean_parts = []
+            for part in audio:
+                p = np.asarray(part, dtype=np.float32).squeeze()
+                if p.ndim != 1 or p.size == 0:
+                    _log_diag(f"Kokoro returned invalid batch audio array: shape={getattr(part, 'shape', None)}")
+                    if os.path.exists(wav_path):
+                        try:
+                            os.unlink(wav_path)
+                        except Exception:
+                            pass
+                    return False
+                clean_parts.append(p)
+            audio = np.concatenate(clean_parts, axis=0) if clean_parts else np.zeros((0,), dtype=np.float32)
+        else:
+            audio = np.asarray(audio, dtype=np.float32).squeeze()
+
+        if audio.ndim != 1 or audio.size == 0 or not np.all(np.isfinite(audio)):
             _log_diag(
                 f"Kokoro returned invalid audio array: shape={getattr(audio, 'shape', None)}, size={getattr(audio, 'size', None)}"
             )
+            if os.path.exists(wav_path):
+                try:
+                    os.unlink(wav_path)
+                except Exception:
+                    pass
             return False
 
         audio = np.clip(audio, -1.0, 1.0)
-        sf.write(wav_path, audio, sample_rate, subtype="PCM_16")
+        sf.write(wav_path, audio, int(sample_rate), subtype="PCM_16")
+        if not os.path.isfile(wav_path) or os.path.getsize(wav_path) == 0:
+            _log_diag("Kokoro generated audio file is missing or empty")
+            if os.path.exists(wav_path):
+                try:
+                    os.unlink(wav_path)
+                except Exception:
+                    pass
+            return False
+
         _log_diag(
             f"Kokoro generated in {gen_time:.2f}s (samples={audio.size}, rate={sample_rate}Hz)"
         )
         return True
     except Exception as e:
         _log_diag(f"Kokoro audio generation failed: {e}")
+        if os.path.exists(wav_path):
+            try:
+                os.unlink(wav_path)
+            except Exception:
+                pass
         return False
 
 
@@ -353,7 +415,7 @@ def _synthesize_to_wav(text: str) -> tuple[Optional[str], int, float]:
     """
     Synthesizes clean text to a temporary WAV file using the configured TTS engine
     with automatic graceful fallback:
-    1. Kokoro ONNX neural TTS (natural British English bm_george voice)
+    1. Kokoro ONNX neural TTS (configured British English voice via KOKORO_VOICE)
     2. Piper neural TTS (if configured and available)
     3. espeak-ng (lightweight local fallback)
 
@@ -369,20 +431,20 @@ def _synthesize_to_wav(text: str) -> tuple[Optional[str], int, float]:
     if TTS_ENGINE in ("auto", "kokoro"):
         success = _synthesize_kokoro(text, wav_path)
         if not success and TTS_ENGINE == "auto":
-            _log_diag("Kokoro TTS unavailable or failed; falling back to secondary engine...")
+            _log_diag("Kokoro TTS unavailable or failed; falling back to secondary engine...", is_warning=True)
 
     # 2. Piper Neural TTS fallback
     if not success and TTS_ENGINE in ("auto", "piper"):
         success = _synthesize_piper(text, wav_path)
         if not success and TTS_ENGINE == "auto":
-            _log_diag("Piper TTS unavailable; falling back to espeak-ng...")
+            _log_diag("Piper TTS unavailable; falling back to espeak-ng...", is_warning=True)
 
     # 3. espeak-ng fallback
     if not success:
         success = _synthesize_espeak(text, wav_path)
 
     if not success or not os.path.isfile(wav_path) or os.path.getsize(wav_path) == 0:
-        _log_diag("All available TTS engines failed to synthesize audio")
+        _log_diag("All available TTS engines failed to synthesize audio", is_error=True)
         if os.path.exists(wav_path):
             try:
                 os.unlink(wav_path)
@@ -467,6 +529,12 @@ def _play_wav_file(wav_path: str, duration: float) -> bool:
                 _ACTIVE_PROC = None
 
 
+def split_into_sentences(text: str) -> list[str]:
+    """Splits text into clean, pronounceable sentence units for pipelined synthesis."""
+    chunks = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    return chunks if chunks else [text.strip()]
+
+
 def _playback_worker_loop():
     """Single background worker loop that processes speech jobs sequentially."""
     global _IS_SPEAKING, _ACTIVE_PROC, _ACTIVE_JOB
@@ -485,28 +553,83 @@ def _playback_worker_loop():
             _IS_SPEAKING = True
             _ACTIVE_JOB = job
 
-        wav_path = None
-        try:
-            wav_path, sample_rate, duration = _synthesize_to_wav(job.clean_text)
-            job.duration = duration
+        sentences = split_into_sentences(job.clean_text)
+        total_duration = 0.0
+        job_success = True
 
-            if wav_path and os.path.isfile(wav_path):
-                job.success = _play_wav_file(wav_path, duration)
+        try:
+            if len(sentences) <= 1:
+                t0_syn = time.perf_counter()
+                wav_path, sample_rate, duration = _synthesize_to_wav(job.clean_text)
+                syn_time = time.perf_counter() - t0_syn
+                job.duration = duration
+
+                if wav_path and os.path.isfile(wav_path):
+                    t_first_audible = time.perf_counter() - job.enqueued_at
+                    _log_diag(
+                        f"Synthesis: {syn_time:.2f}s | First audible sound: {t_first_audible:.2f}s | Playback duration: {duration:.2f}s"
+                    )
+                    try:
+                        job_success = _play_wav_file(wav_path, duration)
+                    finally:
+                        if os.path.exists(wav_path):
+                            try:
+                                os.unlink(wav_path)
+                            except Exception:
+                                pass
+                else:
+                    job_success = False
+                    job.error = "Synthesis produced no valid audio file"
             else:
-                job.success = False
-                job.error = "Synthesis produced no valid audio file"
+                _log_diag(f"Low-latency sentence pipelining active ({len(sentences)} sentences)...")
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=1) as syn_executor:
+                    t0_syn = time.perf_counter()
+                    next_future = syn_executor.submit(_synthesize_to_wav, sentences[0])
+
+                    for idx in range(len(sentences)):
+                        try:
+                            curr_wav, curr_rate, curr_dur = next_future.result(timeout=TTS_MAX_TIMEOUT_SECONDS)
+                        except Exception as e:
+                            _log_diag(f"Pipelined synthesis error for sentence {idx+1}: {e}")
+                            curr_wav, curr_rate, curr_dur = None, 0, 0.0
+
+                        # Submit next sentence synthesis while current sentence will be playing
+                        if idx + 1 < len(sentences):
+                            next_future = syn_executor.submit(_synthesize_to_wav, sentences[idx + 1])
+                        else:
+                            next_future = None
+
+                        if idx == 0:
+                            t_first_audible = time.perf_counter() - job.enqueued_at
+                            _log_diag(
+                                f"Sentence 1 synthesized in {time.perf_counter() - t0_syn:.2f}s | First audible sound: {t_first_audible:.2f}s"
+                            )
+
+                        if curr_wav and os.path.isfile(curr_wav):
+                            try:
+                                play_ok = _play_wav_file(curr_wav, curr_dur)
+                                total_duration += curr_dur
+                                if not play_ok:
+                                    job_success = False
+                            finally:
+                                if os.path.exists(curr_wav):
+                                    try:
+                                        os.unlink(curr_wav)
+                                    except Exception:
+                                        pass
+                        else:
+                            _log_diag(f"Sentence {idx+1} could not be synthesized, skipping audio")
+
+                job.duration = total_duration
 
         except Exception as e:
-            job.success = False
+            job_success = False
             job.error = str(e)
             _log_diag(f"Playback error: {e}")
         finally:
-            if wav_path and os.path.exists(wav_path):
-                try:
-                    os.unlink(wav_path)
-                except Exception:
-                    pass
-
+            job.success = job_success
             with _STATE_LOCK:
                 _ACTIVE_JOB = None
                 _ACTIVE_PROC = None

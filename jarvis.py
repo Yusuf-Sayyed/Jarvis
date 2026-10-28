@@ -3,8 +3,12 @@ JARVIS - Advanced Voice Assistant for Fedora KDE Linux
 Main entry point coordinating listener, session state, and command routing.
 """
 
+import fcntl
 import json
+import os
 import sys
+import time
+from actions.audio import get_volume_status
 from core.config import EXIT_COMMANDS
 from core.intent import normalize_spoken_text
 from core.listener import (
@@ -20,8 +24,97 @@ from core.wake_word import (
     extract_wake_command,
     format_time_remaining,
     get_activation_greeting,
+    get_startup_greeting,
+    has_greeted_this_login_session,
+    mark_greeted_this_login_session,
 )
 from interfaces.speech import speak
+
+_LOCK_FILE_OBJ = None
+
+
+def acquire_instance_lock() -> bool:
+    """
+    Ensures only a single instance of JARVIS runs per user session.
+    Uses an exclusive non-blocking flock on $XDG_RUNTIME_DIR/jarvis.lock.
+    """
+    global _LOCK_FILE_OBJ
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and os.path.isdir(runtime_dir):
+        lock_path = os.path.join(runtime_dir, "jarvis.lock")
+    else:
+        lock_path = f"/tmp/jarvis_{os.getuid()}.lock"
+
+    try:
+        f = open(lock_path, "w")
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        f.write(f"{os.getpid()}\n")
+        f.flush()
+        _LOCK_FILE_OBJ = f
+        return True
+    except (IOError, OSError):
+        return False
+
+
+def release_instance_lock():
+    """Releases the instance lock file upon shutdown."""
+    global _LOCK_FILE_OBJ
+    if _LOCK_FILE_OBJ:
+        try:
+            fcntl.flock(_LOCK_FILE_OBJ, fcntl.LOCK_UN)
+            _LOCK_FILE_OBJ.close()
+        except Exception:
+            pass
+        _LOCK_FILE_OBJ = None
+
+
+def wait_for_audio_readiness(timeout_seconds: float = 6.0) -> bool:
+    """
+    Waits for PipeWire/WirePlumber and default audio sink to become ready.
+    Returns True if audio is ready, False if timed out.
+    """
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        try:
+            vol, _, _ = get_volume_status()
+            if vol is not None:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return False
+
+
+def perform_startup_greeting(stream, speech_engine, force: bool = False):
+    """
+    Delivers a Tony Stark-style startup greeting once per desktop login session,
+    waiting for audio system readiness and draining microphone buffers to avoid self-transcription.
+    """
+    if not force and has_greeted_this_login_session():
+        print("[JARVIS] Startup greeting already delivered for this desktop session. Standing by.")
+        return
+
+    # Wait for audio readiness (PipeWire / WirePlumber default sink)
+    audio_ready = wait_for_audio_readiness(timeout_seconds=5.0)
+    if not audio_ready:
+        print("[JARVIS] Audio readiness check timed out. Proceeding with greeting attempt.")
+
+    greeting = get_startup_greeting()
+    print(f"\n[JARVIS] {greeting}")
+
+    # Mark as greeted for this desktop session BEFORE speaking (persisted in $XDG_RUNTIME_DIR)
+    mark_greeted_this_login_session()
+
+    try:
+        speak(greeting, block=True)
+    except Exception as e:
+        print(f"[JARVIS] Startup greeting speech notice: {e}")
+
+    # Clean microphone buffer to prevent self-transcription
+    if stream:
+        drain_audio_stream(stream)
+    if speech_engine:
+        speech_engine.reset_buffers()
 
 
 def print_banner():
@@ -58,6 +151,26 @@ def drain_audio_stream(stream):
 
 
 def main():
+    if not acquire_instance_lock():
+        print("[JARVIS] Another instance is already running. Exiting cleanly to avoid duplicate listeners.")
+        sys.exit(0)
+
+    if "--test-greeting" in sys.argv:
+        print("[JARVIS] Testing startup greeting...")
+        audio_mgr, stream = init_audio_stream()
+        speech_engine = init_speech_engine()
+        try:
+            perform_startup_greeting(stream, speech_engine, force=True)
+        finally:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+            audio_mgr.terminate()
+            release_instance_lock()
+        sys.exit(0)
+
     print_banner()
 
     # 1. Initialize speech recognition engine (Whisper with VAD, or Vosk fallback)
@@ -71,7 +184,10 @@ def main():
 
     print_standby_status()
 
-    # 4. Initialize wake-word session state and acoustic clap detector
+    # 4. Perform startup greeting (spoken once per desktop login session)
+    perform_startup_greeting(stream, speech_engine)
+
+    # 5. Initialize wake-word session state and acoustic clap detector
     session = SessionState()
     clap_detector = ClapDetector()
 
@@ -214,11 +330,17 @@ def main():
         print("\n[JARVIS] Stopped by user (Ctrl+C). Goodbye, Sir!")
     finally:
         try:
-            stream.stop_stream()
-            stream.close()
+            if "stream" in locals() and stream is not None:
+                stream.stop_stream()
+                stream.close()
         except Exception:
             pass
-        audio_mgr.terminate()
+        try:
+            if "audio_mgr" in locals() and audio_mgr is not None:
+                audio_mgr.terminate()
+        except Exception:
+            pass
+        release_instance_lock()
 
 
 if __name__ == "__main__":

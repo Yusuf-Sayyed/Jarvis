@@ -73,6 +73,50 @@ def extract_and_store_user_facts(text: str) -> dict[str, str]:
     return facts
 
 
+PYTHON_TUTORING_CURRICULUM = {
+    1: {
+        "question": "What is the first thing you need to do when you start a Python interpreter or editor, such as IDLE or PyCharm?",
+        "hint": "Consider whether you are creating a new script file with a specific extension, or typing directly into an interactive shell, Sir.",
+        "keywords": ["file", "extension", ".py", "script", "create", "type", "command", "open"],
+        "correct_eval": "Partially correct, Sir. In an editor like PyCharm or IDLE, you create a new file with a .py extension, or in an interactive interpreter you can type commands immediately.",
+        "general_eval": "In an editor, you first create a new file with a .py extension, or in the interactive prompt you can run commands directly, Sir.",
+        "concept_explanation": "In Python, a script is saved in a text file ending with the dot py extension, which tells the operating system and Python interpreter how to run it, Sir.",
+    },
+    2: {
+        "question": "What built-in function or keyword is used to display text on the screen in Python?",
+        "hint": "It starts with the letter 'p' and takes arguments inside parentheses, Sir.",
+        "keywords": ["print"],
+        "correct_eval": "Correct, Sir. The print() function outputs text directly to standard output.",
+        "general_eval": "In Python, the built-in print() function is used to output text to the screen, Sir.",
+        "concept_explanation": "The print() function takes text or variables inside parentheses and displays them on the console, Sir.",
+    },
+    3: {
+        "question": "How do you store a value, such as a number or word, so you can reuse it later in your Python program?",
+        "hint": "It is a named container known as a variable, created with an equals sign, Sir.",
+        "keywords": ["variable", "assign", "var"],
+        "correct_eval": "Spot on, Sir. You assign the value to a named variable using the equals sign.",
+        "general_eval": "In Python, you store values in named variables using the assignment operator, for example x = 10, Sir.",
+        "concept_explanation": "Variables are named references in computer memory that hold data you can update and reference throughout your program, Sir.",
+    },
+    4: {
+        "question": "What symbol does Python use to indicate comments that the interpreter should ignore?",
+        "hint": "It is the hash or pound symbol on your keyboard, Sir.",
+        "keywords": ["#", "hash", "pound"],
+        "correct_eval": "Correct, Sir. The hash symbol # is used for single-line comments.",
+        "general_eval": "The hash symbol, also known as the pound sign, indicates a comment in Python, Sir.",
+        "concept_explanation": "Comments explain code to human readers; Python completely ignores anything on a line following the hash symbol, Sir.",
+    },
+    5: {
+        "question": "What built-in data type would you use to store an ordered collection of multiple items in square brackets?",
+        "hint": "It is a sequence type called a list, written with square brackets, Sir.",
+        "keywords": ["list", "array"],
+        "correct_eval": "Correct, Sir. A list holds ordered, mutable items enclosed in square brackets.",
+        "general_eval": "In Python, an ordered collection in square brackets is called a list, Sir.",
+        "concept_explanation": "Lists let you store items in sequence, like my_list = [1, 2, 3], and modify them as needed, Sir.",
+    },
+}
+
+
 def route_command(text: str, pending_action: str | None = None) -> tuple[bool, str | None]:
     """
     Detects the intent of spoken text and routes it to the proper action.
@@ -81,6 +125,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         (should_continue: bool, new_pending_action: str | None)
     """
     context = get_conversation_context()
+    from interfaces.speech import speak
     intent, params = detect_intent(text, pending_action)
 
     # 1. Confirmation Responses (Yes / No)
@@ -90,6 +135,23 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         print(f"[Intent: CONFIRM_ACTION | Action: {action}]")
         if action == "close_tab":
             keyboard.close_browser_tab()
+        elif action == "youtube_play":
+            q = payload.get("query") or context.get_recent_youtube_query()
+            if q:
+                res = browser.play_youtube_video(q)
+                msg = res.get("message", f"Playing '{q}' on YouTube, Sir.")
+                stage = res.get("stage", "video_opened")
+                print(f"[JARVIS | Playback Stage: {stage}] {msg}")
+                from interfaces.speech import speak
+                speak(msg)
+                context.update_interaction(action="youtube_play", app="firefox", target_name=q)
+            else:
+                prompt_msg = "What video or song would you like me to play on YouTube, Sir?"
+                print(f'\n[JARVIS] "{prompt_msg}"\n')
+                from interfaces.speech import speak
+                speak(prompt_msg)
+                context.set_pending("youtube_play")
+                return True, "youtube_play"
         elif action == "confirm_open_project":
             app_bin = payload.get("app_bin")
             target_path = payload.get("path")
@@ -199,13 +261,11 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         offset = params.get("offset")
         mute_state = params.get("mute_state", True)
 
-        offset_str = f" | Offset: {offset}s" if offset is not None else ""
-        target_str = f" | Target: {target}" if target else ""
-        print(f"[Intent: MEDIA_CONTROL | Action: {action}{offset_str}{target_str}]")
+        print(f"[Intent] MEDIA_CONTROL: {action}")
 
         if action == "pause":
             ok, msg, candidates = media.pause_playback(target)
-        elif action == "resume":
+        elif action in ("resume", "play"):
             ok, msg, candidates = media.resume_playback(target)
         elif action == "stop":
             ok, msg, candidates = media.stop_playback(target)
@@ -221,16 +281,29 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             ok, msg, candidates = False, f"Unknown media action '{action}', Sir.", None
 
         if candidates and len(candidates) > 1:
-            print(f'\n[JARVIS] "I found multiple active media sessions ({", ".join(candidates)}). Which one would you like me to {action}, Sir?"\n')
+            clarify_text = f"I found multiple active media sessions ({', '.join(candidates)}). Which one would you like me to {action}, Sir?"
+            print(f'\n[JARVIS] "{clarify_text}"\n')
             context.set_pending("clarify_media_player", {"candidates": candidates, "action": action, "params": params})
+            speak(clarify_text)
             return True, "clarify_media_player"
 
         if ok:
-            print(f"[JARVIS] {msg}")
-        elif "could not be verified" in msg.lower() or "dispatched" in msg.lower():
-            print(f"[JARVIS Warning] {msg}")
+            console_msg = "Stopped playback." if action == "stop" else (
+                "Paused playback." if action == "pause" else (
+                    "Resumed playback." if action in ("resume", "play") else msg
+                )
+            )
+            print(f"[JARVIS] {console_msg}")
+            speak(msg)
         else:
-            print(f"[JARVIS Error] {msg}")
+            if "no active media playback session" in msg.lower() or "no compatible" in msg.lower():
+                fail_msg = "Couldn't control playback. No compatible media player was detected."
+            else:
+                fail_msg = msg
+                if not fail_msg.startswith("Couldn't control playback"):
+                    fail_msg = f"Couldn't control playback. {fail_msg}"
+            print(f"[JARVIS] {fail_msg}")
+            speak(fail_msg)
         return True, None
 
     # 1.5 Smart Intent & Learned Workflow Actions (Natural Language & Follow-ups)
@@ -547,6 +620,19 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 print(f"[JARVIS Error] Failed to launch {app_info.name}: {e}")
                 memory.record_pattern_failure(text)
 
+        if smart_action == "launch_app":
+            app_name = smart_params.get("app") or smart_params.get("project")
+            app_info = app_registry.resolve_application(app_name) if app_name else None
+            if app_info and app_info.exec_path:
+                try:
+                    print(f"[JARVIS] Opening {app_info.name}...")
+                    subprocess.Popen([app_info.exec_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"[JARVIS] {app_info.name} launched successfully.")
+                    context.update_interaction(action="launch_app", app=app_info.name.lower(), app_bin=app_info.exec_path)
+                except Exception as e:
+                    print(f"[JARVIS Error] Failed to launch {app_info.name}: {e}")
+            else:
+                print(f"\n[JARVIS Error] Could not find application '{app_name}' on this system, Sir.\n")
             return True, None
 
         if smart_action == "launch_terminal_at":
@@ -779,43 +865,123 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
 
     # 4. YouTube Direct Video Playback
     if intent == "YOUTUBE_PLAY_PROMPT":
+        vol = params.get("volume")
+        vol_prefix = ""
+        if vol is not None:
+            ok, vol_msg = audio.set_volume(vol)
+            if ok:
+                vol_prefix = f"Volume set to {vol}%. "
+            else:
+                vol_prefix = f"Volume warning: {vol_msg}. "
         print("[Intent: YOUTUBE_PLAY | Awaiting Query]")
-        print('\n[JARVIS] "What video or song would you like me to play on YouTube, Sir?"\n')
+        prompt_msg = f"{vol_prefix}What video or song would you like me to play on YouTube, Sir?"
+        print(f'\n[JARVIS] "{prompt_msg}"\n')
+        from interfaces.speech import speak
+        speak(prompt_msg)
         return True, "youtube_play"
 
     if intent == "YOUTUBE_PLAY":
         query = params.get("query", "")
         if not query:
+            query = context.get_recent_youtube_query() or ""
+
+        vol = params.get("volume")
+        vol_prefix = ""
+        if vol is not None:
+            ok, vol_msg = audio.set_volume(vol)
+            if ok:
+                vol_prefix = f"Volume set to {vol}%. "
+            else:
+                vol_prefix = f"Volume warning: {vol_msg}. "
+
+        if not query:
             print("[Intent: YOUTUBE_PLAY | Query Unclear]")
-            print('\n[JARVIS] "Please state what video or song you would like to play, Sir."\n')
+            prompt_msg = f"{vol_prefix}What video or song would you like me to play on YouTube, Sir?"
+            print(f'\n[JARVIS] "{prompt_msg}"\n')
+            from interfaces.speech import speak
+            speak(prompt_msg)
             return True, "youtube_play"
 
         print(f"[Intent: YOUTUBE_PLAY | Query: \"{query}\"]")
-        browser.play_youtube_video(query)
+        res = browser.play_youtube_video(query)
+        stage = res.get("stage", "video_opened") if isinstance(res, dict) else "video_opened"
+        base_msg = res.get("message", f"Opened '{query}' on YouTube, Sir.") if isinstance(res, dict) else f"Opened '{query}' on YouTube, Sir."
+        final_msg = f"{vol_prefix}{base_msg}".strip()
+
+        print(f"[JARVIS | Playback Stage: {stage}] {final_msg}")
+        from interfaces.speech import speak
+        speak(final_msg)
+        context.update_interaction(action="youtube_play", app="firefox", target_name=query)
+        context.set_pending_youtube(query=query, url=res.get("url") if isinstance(res, dict) else None)
         return True, None
 
     if intent == "YOUTUBE_FIRST_RESULT":
+        vol = params.get("volume")
+        vol_prefix = ""
+        if vol is not None:
+            ok, vol_msg = audio.set_volume(vol)
+            if ok:
+                vol_prefix = f"Volume set to {vol}%. "
+            else:
+                vol_prefix = f"Volume warning: {vol_msg}. "
         print("[Intent: YOUTUBE_FIRST_RESULT]")
-        browser.open_first_youtube_result()
+        res = browser.open_first_youtube_result()
+        stage = res.get("stage", "video_opened") if isinstance(res, dict) else "video_opened"
+        base_msg = res.get("message", "Opened first result on YouTube, Sir.") if isinstance(res, dict) else "Opened first result on YouTube, Sir."
+        final_msg = f"{vol_prefix}{base_msg}".strip()
+        print(f"[JARVIS | Stage: {stage}] {final_msg}")
+        from interfaces.speech import speak
+        speak(final_msg)
         return True, None
 
     # 5. Web Search Intent (Search results page)
     if intent == "SEARCH_PROMPT":
         engine = params.get("engine", "google")
+        vol = params.get("volume")
+        vol_prefix = ""
+        if vol is not None:
+            ok, vol_msg = audio.set_volume(vol)
+            if ok:
+                vol_prefix = f"Volume set to {vol}%. "
+            else:
+                vol_prefix = f"Volume warning: {vol_msg}. "
         print(f"[Intent: BROWSER_SEARCH | Engine: {engine.capitalize()} | Awaiting Query]")
-        print(f'\n[JARVIS] "What would you like me to search for on {engine.capitalize()}, Sir?"\n')
+        prompt_msg = f"{vol_prefix}What would you like me to search for on {engine.capitalize()}, Sir?"
+        print(f'\n[JARVIS] "{prompt_msg}"\n')
+        from interfaces.speech import speak
+        speak(prompt_msg)
         return True, f"search_{engine}"
 
     if intent == "BROWSER_SEARCH":
         engine = params.get("engine", "google")
         query = params.get("query", "")
+        vol = params.get("volume")
+        vol_prefix = ""
+        if vol is not None:
+            ok, vol_msg = audio.set_volume(vol)
+            if ok:
+                vol_prefix = f"Volume set to {vol}%. "
+            else:
+                vol_prefix = f"Volume warning: {vol_msg}. "
+
         if not query:
             print(f"[Intent: BROWSER_SEARCH | Engine: {engine.capitalize()} | Query Unclear]")
-            print(f'\n[JARVIS] "I could not identify the search query, Sir. Please say: \'Search {engine.capitalize()} for [your query]\'."\n')
+            prompt_msg = f"{vol_prefix}What would you like me to search for on {engine.capitalize()}, Sir?"
+            print(f'\n[JARVIS] "{prompt_msg}"\n')
+            from interfaces.speech import speak
+            speak(prompt_msg)
             return True, f"search_{engine}"
 
         print(f"[Intent: BROWSER_SEARCH | Engine: {engine.capitalize()} | Query: \"{query}\"]")
-        browser.search_web(query, engine)
+        res = browser.search_web(query, engine)
+        stage = res.get("stage", "search_page_opened") if isinstance(res, dict) else "search_page_opened"
+        final_msg = f"{vol_prefix}Searching {engine.capitalize()} for '{query}', Sir."
+        print(f"[JARVIS | Stage: {stage}] {final_msg}")
+        from interfaces.speech import speak
+        speak(final_msg)
+        context.update_interaction(action="search_web", app="firefox", target_name=query)
+        if engine == "youtube":
+            context.set_pending_youtube(query=query)
         return True, None
 
     # 6. Typing Intent
@@ -844,6 +1010,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         print(f"[Intent: DESKTOP_ACTION | Action: {action}]")
         action_map = {
             "open_firefox": desktop.open_firefox,
+            "open_browser": getattr(desktop, "open_browser", desktop.open_firefox),
             "open_firefox_tab": browser.open_firefox_tab,
             "open_firefox_window": browser.open_firefox_window,
             "open_terminal": desktop.open_terminal,
@@ -856,6 +1023,31 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 fn()
             except Exception as e:
                 print(f"[JARVIS Error] Failed to execute action '{action}': {e}")
+        elif action == "launch_app":
+            exec_path = params.get("exec_path")
+            app_name = params.get("app", "Application")
+            if exec_path:
+                try:
+                    print(f"[JARVIS] Opening {app_name}...")
+                    subprocess.Popen([exec_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"[JARVIS] {app_name} launched successfully.")
+                except Exception as e:
+                    print(f"[JARVIS Error] Failed to launch {app_name}: {e}")
+            else:
+                print(f"[JARVIS Error] Could not determine executable for {app_name}.")
+        return True, None
+
+    # 8.9 Ambiguous Action Clarification Handling
+    if intent == "CLARIFY_ACTION":
+        target_action = params.get("action")
+        question = params.get("question", "Could you please specify the details, Sir?")
+        print(f"[Intent: CLARIFY_ACTION | Action: {target_action}]")
+        print(f'\n[JARVIS] "{question}"\n')
+        from interfaces.speech import speak
+        speak(question)
+        if target_action:
+            context.set_pending(f"clarify_{target_action}", params)
+            return True, f"clarify_{target_action}"
         return True, None
 
     # 9. Low-confidence / Unclear speech handling
@@ -908,6 +1100,9 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
 
         if success and answer:
             print(f"\n[JARVIS]: \"{answer}\"\n")
+            from interfaces.speech import speak
+            speak(answer)
+            context.add_dialogue_turn(query, answer)
             if results:
                 print("Sources:")
                 for idx, r in enumerate(results, 1):
@@ -920,14 +1115,162 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             print(f"\n[JARVIS Error] {answer}\n")
         return True, None
 
+    # 10.5 Interactive Tutoring and Learning Lessons
+    if intent == "START_TUTORING":
+        topic = params.get("topic", "python")
+        step_1 = PYTHON_TUTORING_CURRICULUM.get(1)
+        q1 = step_1["question"]
+        context.start_activity("tutoring", topic, initial_question=q1)
+        response = f"Certainly, Sir. Let's begin with {topic.capitalize()} basics. {q1}"
+        print(f"\n[JARVIS]: \"{response}\"\n")
+        from interfaces.speech import speak
+        speak(response)
+        context.add_dialogue_turn(text, response)
+        return True, None
+
+    if intent == "TUTORING_CONTROL":
+        action = params.get("action")
+        act = context.get_active_activity()
+        from interfaces.speech import speak
+
+        if action == "stop_lesson":
+            context.stop_activity()
+            response = "Lesson paused, Sir. Let me know when you would like to resume."
+            print(f"\n[JARVIS]: \"{response}\"\n")
+            speak(response)
+            context.add_dialogue_turn(text, response)
+            return True, None
+
+        if not act:
+            response = "We do not have an active lesson running, Sir."
+            print(f"\n[JARVIS]: \"{response}\"\n")
+            speak(response)
+            return True, None
+
+        step = act.lesson_step
+        curr_step_data = PYTHON_TUTORING_CURRICULUM.get(step, PYTHON_TUTORING_CURRICULUM[1])
+
+        if action == "give_hint":
+            context.increment_hint()
+            hint_text = curr_step_data.get("hint", "Think about standard beginner Python conventions, Sir.")
+            response = f"{hint_text} The question is: {act.current_question}"
+            print(f"\n[JARVIS]: \"{response}\"\n")
+            speak(response)
+            context.add_dialogue_turn(text, response)
+            return True, None
+
+        if action == "dont_know":
+            next_step = step + 1
+            next_data = PYTHON_TUTORING_CURRICULUM.get(next_step)
+            expl = curr_step_data.get("general_eval", "The answer is part of basic Python syntax, Sir.")
+            if next_data:
+                next_q = next_data["question"]
+                context.update_activity_question(next_q)
+                response = f"No problem, Sir. {expl} Next question: {next_q}"
+            else:
+                context.stop_activity()
+                response = f"No problem, Sir. {expl} That completes our introductory Python lesson for today!"
+            print(f"\n[JARVIS]: \"{response}\"\n")
+            speak(response)
+            context.add_dialogue_turn(text, response)
+            return True, None
+
+        if action == "next_question":
+            next_step = step + 1
+            next_data = PYTHON_TUTORING_CURRICULUM.get(next_step)
+            if next_data:
+                next_q = next_data["question"]
+                context.update_activity_question(next_q)
+                response = f"Understood, Sir. Next question: {next_q}"
+            else:
+                context.stop_activity()
+                response = "That brings us to the end of our introductory lesson, Sir. Excellent effort!"
+            print(f"\n[JARVIS]: \"{response}\"\n")
+            speak(response)
+            context.add_dialogue_turn(text, response)
+            return True, None
+
+        if action == "explain":
+            concept = curr_step_data.get("concept_explanation", "This is a fundamental concept in Python programming, Sir.")
+            response = f"{concept} The active question is: {act.current_question}"
+            print(f"\n[JARVIS]: \"{response}\"\n")
+            speak(response)
+            context.add_dialogue_turn(text, response)
+            return True, None
+
+    if intent == "TUTORING_ANSWER":
+        answer = params.get("answer", text)
+        question = params.get("question", "")
+        topic = params.get("topic", "python")
+        step = params.get("step", 1)
+        from interfaces.speech import speak
+
+        act = context.get_active_activity()
+        if not act:
+            return route_command(text)
+
+        curr_data = PYTHON_TUTORING_CURRICULUM.get(step, PYTHON_TUTORING_CURRICULUM.get(1))
+        next_step = step + 1
+        next_data = PYTHON_TUTORING_CURRICULUM.get(next_step)
+
+        # Local deterministic evaluation
+        ans_lower = answer.lower()
+        is_correct = any(kw in ans_lower for kw in curr_data.get("keywords", []))
+        feedback = curr_data.get("correct_eval" if is_correct else "general_eval", "")
+
+        from intelligence.ollama_client import ask_tutoring_evaluation
+        llm_eval = ask_tutoring_evaluation(topic, question, answer, step=step, history=act.history)
+
+        if llm_eval:
+            final_response = llm_eval
+            if next_data:
+                context.update_activity_question(next_data["question"])
+            context.record_activity_turn(question, answer, llm_eval)
+        else:
+            if next_data:
+                next_q = next_data["question"]
+                context.update_activity_question(next_q)
+                final_response = f"{feedback} Next question: {next_q}"
+            else:
+                context.stop_activity()
+                final_response = f"{feedback} That concludes our initial Python basics lesson, Sir. Well done!"
+            context.record_activity_turn(question, answer, feedback)
+
+        print(f"\n[JARVIS]: \"{final_response}\"\n")
+        speak(final_response)
+        context.add_dialogue_turn(text, final_response)
+        return True, None
+
+    if intent == "UNSUPPORTED_ACTION":
+        message = params.get("message", "I do not have a tool to perform that action yet, Sir.")
+        print(f"\n[JARVIS]: \"{message}\"\n")
+        from interfaces.speech import speak
+        speak(message)
+        context.add_dialogue_turn(text, message)
+        return True, None
+
     # 11. Ollama Fallback with Automatic Real-Time Web Search Bridge & User Memory
     if intent == "OLLAMA_QUERY":
         prompt = params.get("prompt", text)
         extract_and_store_user_facts(prompt or text)
         from intelligence.ollama_client import is_knowledge_gap
-        answer = ask_ollama(prompt, print_output=False)
+        from interfaces.speech import speak
+
+        # Enforce summary by default, full detail only when explicitly requested
+        is_detail_requested = any(phrase in (prompt or text).lower() for phrase in (
+            "in detail", "explain in detail", "give me more details", "give more details",
+            "detailed explanation", "elaborate", "thoroughly", "in depth", "detailed"
+        ))
+        if is_detail_requested:
+            detail_guidance = ["Detailed response mode: The user explicitly requested details. Provide an informative, comprehensive explanation (3 to 5 sentences)."]
+        else:
+            detail_guidance = ["Summary mode: Spoken voice interface. Keep your answer small and like a brief summary (strictly 1 to 2 short sentences)."]
+
+        answer = ask_ollama(prompt, print_output=False, additional_context=detail_guidance)
         if answer and not is_knowledge_gap(answer):
             print(f"\n[JARVIS]: \"{answer}\"\n")
+            speak(answer)
+            context.add_dialogue_turn(prompt, answer)
             return True, None
 
         # CRITICAL: Prevent personal or memory queries from leaking to web search!
@@ -935,8 +1278,13 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         if is_personal_memory_query(prompt):
             if answer:
                 print(f"\n[JARVIS]: \"{answer}\"\n")
+                speak(answer)
+                context.add_dialogue_turn(prompt, answer)
             else:
-                print("\n[JARVIS] I don't recall that information yet, Sir.\n")
+                nomem = "I don't recall that information yet, Sir."
+                print(f"\n[JARVIS] {nomem}\n")
+                speak(nomem)
+                context.add_dialogue_turn(prompt, nomem)
             return True, None
 
         # If Ollama has a knowledge gap or is unavailable, bridge to real-time web search
@@ -945,6 +1293,8 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         success, web_answer, results = handle_current_info_query(prompt)
         if success and web_answer:
             print(f"\n[JARVIS]: \"{web_answer}\"\n")
+            speak(web_answer)
+            context.add_dialogue_turn(prompt, web_answer)
             if results:
                 print("Sources:")
                 for idx, r in enumerate(results, 1):
@@ -956,8 +1306,12 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         else:
             if answer:
                 print(f"\n[JARVIS]: \"{answer}\"\n")
+                speak(answer)
+                context.add_dialogue_turn(prompt, answer)
             else:
-                print("\n[JARVIS] I could not find information locally or retrieve current web results, Sir.\n")
+                gap_msg = "I could not find information locally or retrieve current web results, Sir."
+                print(f"\n[JARVIS] {gap_msg}\n")
+                speak(gap_msg)
         return True, None
 
     return True, None

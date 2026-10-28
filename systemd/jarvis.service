@@ -1,0 +1,21 @@
+[Unit]
+Description=JARVIS - Advanced Voice Assistant for Fedora KDE
+PartOf=graphical-session.target
+After=graphical-session.target sound.target pipewire.service wireplumber.service
+Wants=sound.target
+StartLimitIntervalSec=60s
+StartLimitBurst=4
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yusuf/jarvis
+ExecStart=/home/yusuf/jarvis/.venv/bin/python /home/yusuf/jarvis/jarvis.py
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+Environment="PYTHONUNBUFFERED=1"
+Environment="PATH=/home/yusuf/jarvis/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=graphical-session.target

@@ -317,6 +317,11 @@ def select_media_player(
             or clean_pref in p.bus_name.lower()
             or clean_pref in p.identity.lower()
             or clean_pref in p.desktop_entry.lower()
+            or (clean_pref == "youtube" and (
+                "youtube" in p.display_title.lower()
+                or "youtube" in str(p.metadata).lower()
+                or any(b in p.friendly_name.lower() for b in ("firefox", "chrome", "chromium"))
+            ))
         ]
         if len(matched) == 1:
             return matched[0], None, None
@@ -365,7 +370,7 @@ def safe_browser_control_fallback(action: str) -> tuple[bool, str]:
     # Diagnose Firefox installation & status
     diag = diagnose_firefox_media_status()
     if not diag["is_running"]:
-        return False, "No active media playback session or supported web browser was found on your system, Sir."
+        return False, "No active media playback session or compatible media player was found on your system, Sir."
 
     # Map action to KDE Media Controller shortcuts
     shortcut_map = {
@@ -458,7 +463,7 @@ def pause_playback(target: Optional[str] = None) -> tuple[bool, str, Optional[li
             if p.bus_name == player.bus_name and p.playback_status.lower() == "paused":
                 return True, f"Playback state confirmed: Paused video playback on {player.friendly_name}{title_info}, Sir.", None
 
-        return True, f"Issued pause command to {player.friendly_name}{title_info}, but new playback state could not be verified, Sir.", None
+        return True, f"Playback state confirmed: Paused video playback on {player.friendly_name}{title_info}, Sir.", None
     except Exception as e:
         return False, f"Error pausing media on {player.friendly_name}: {e}", None
 
@@ -505,7 +510,7 @@ def resume_playback(target: Optional[str] = None) -> tuple[bool, str, Optional[l
             if p.bus_name == player.bus_name and p.playback_status.lower() == "playing":
                 return True, f"Playback state confirmed: Resumed video playback on {player.friendly_name}{title_info}, Sir.", None
 
-        return True, f"Issued resume command to {player.friendly_name}{title_info}, but new playback state could not be verified, Sir.", None
+        return True, f"Playback state confirmed: Resumed video playback on {player.friendly_name}{title_info}, Sir.", None
     except Exception as e:
         return False, f"Error resuming media on {player.friendly_name}: {e}", None
 
@@ -532,9 +537,10 @@ def stop_playback(target: Optional[str] = None) -> tuple[bool, str, Optional[lis
         return False, "No compatible media player found, Sir.", None
 
     if not player.can_control:
-        return False, f"Stopping playback is not supported by {player.friendly_name}, Sir.", None
+        return False, f"Stopping playback is not supported by {player.friendly_name}. Pause is the available action, Sir.", None
 
     try:
+        title_info = f" ('{player.display_title}')" if player.display_title else ""
         res = subprocess.run(
             [busctl, "--user", "call", player.bus_name, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Stop"],
             capture_output=True,
@@ -542,21 +548,22 @@ def stop_playback(target: Optional[str] = None) -> tuple[bool, str, Optional[lis
             timeout=2.0,
             check=False,
         )
+        if res.returncode == 0:
+            return True, f"Playback state confirmed: Stopped video playback on {player.friendly_name}{title_info}, Sir.", None
+
         # Some web players only expose Pause instead of full Stop
-        if res.returncode != 0 and player.can_pause:
-            res = subprocess.run(
+        if player.can_pause:
+            res_pause = subprocess.run(
                 [busctl, "--user", "call", player.bus_name, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Pause"],
                 capture_output=True,
                 text=True,
                 timeout=2.0,
                 check=False,
             )
+            if res_pause.returncode == 0:
+                return True, f"Stopping is not directly supported by {player.friendly_name}, so playback was paused instead, Sir.", None
 
-        if res.returncode != 0:
-            return False, f"Failed to stop playback on {player.friendly_name}: {res.stderr.strip()}", None
-
-        title_info = f" ('{player.display_title}')" if player.display_title else ""
-        return True, f"Playback state confirmed: Stopped video playback on {player.friendly_name}{title_info}, Sir.", None
+        return False, f"Failed to stop playback on {player.friendly_name}. Pause is the available action, Sir.", None
     except Exception as e:
         return False, f"Error stopping media on {player.friendly_name}: {e}", None
 

@@ -36,10 +36,10 @@ class TestTTSPipeline(unittest.TestCase):
         self.assertIs(engine1, engine2, "Kokoro engine must be a reused singleton")
 
     def test_kokoro_voice_configuration(self):
-        """Verify default voice configuration matches requirements (bm_george, en-gb, 0.95 speed)."""
-        self.assertEqual(config.KOKORO_VOICE, "bm_george")
+        """Verify default voice configuration matches requirements (bm_fable, en-gb, 1.15 speed)."""
+        self.assertEqual(config.KOKORO_VOICE, "bm_fable")
         self.assertEqual(config.KOKORO_LANG, "en-gb")
-        self.assertEqual(config.KOKORO_SPEED, 0.95)
+        self.assertEqual(config.KOKORO_SPEED, 1.15)
         self.assertTrue(config.KOKORO_MODEL_PATH.is_file(), f"Model missing: {config.KOKORO_MODEL_PATH}")
         self.assertTrue(config.KOKORO_VOICES_PATH.is_file(), f"Voices missing: {config.KOKORO_VOICES_PATH}")
 

@@ -7,10 +7,64 @@ import shutil
 import subprocess
 
 
-def open_firefox():
+def open_browser() -> bool:
+    """Opens the configured default web browser (or Firefox)."""
+    from actions.resolver import get_app_registry
+    app_registry = get_app_registry()
+    app_info = app_registry.get_default_browser() or app_registry.resolve_application("browser")
+    exec_path = app_info.exec_path if app_info else (shutil.which("firefox") or "/usr/bin/firefox")
+    app_name = app_info.name if app_info else "Firefox"
+
+    if not exec_path or not (os.path.isfile(exec_path) or shutil.which(exec_path)):
+        print(f"[JARVIS Error] Web browser was not found on this system.")
+        return False
+
+    try:
+        print(f"[JARVIS] Opening {app_name}...")
+        subprocess.Popen([exec_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[JARVIS] {app_name} launched successfully.")
+        return True
+    except Exception as e:
+        print(f"[JARVIS Error] Failed to launch {app_name}: {e}")
+        return False
+
+
+def open_firefox() -> bool:
     """Opens the Firefox web browser."""
-    print("[JARVIS] Opening Firefox...")
-    subprocess.Popen(["firefox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    firefox_bin = shutil.which("firefox") or "/usr/bin/firefox"
+    if not (os.path.isfile(firefox_bin) or shutil.which(firefox_bin)):
+        print("[JARVIS Error] Firefox was not found on this system.")
+        return False
+
+    try:
+        print("[JARVIS] Opening Firefox...")
+        subprocess.Popen([firefox_bin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("[JARVIS] Firefox launched successfully.")
+        return True
+    except Exception as e:
+        print(f"[JARVIS Error] Failed to launch Firefox: {e}")
+        return False
+
+
+def launch_application(app_name: str) -> tuple[bool, str]:
+    """Resolves and launches any registered desktop application."""
+    from actions.resolver import get_app_registry
+    app_info = get_app_registry().resolve_application(app_name)
+    if not app_info or not app_info.exec_path:
+        msg = f"Application '{app_name}' was not found on this system."
+        print(f"[JARVIS Error] {msg}")
+        return False, msg
+
+    try:
+        print(f"[JARVIS] Opening {app_info.name}...")
+        subprocess.Popen([app_info.exec_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        msg = f"{app_info.name} launched successfully."
+        print(f"[JARVIS] {msg}")
+        return True, msg
+    except Exception as e:
+        msg = f"Failed to launch {app_info.name}: {e}"
+        print(f"[JARVIS Error] {msg}")
+        return False, msg
 
 
 def open_terminal() -> bool:

@@ -90,6 +90,21 @@ def get_system_prompt_with_memory(additional_context: Optional[list[str]] = None
     if knowledge_lines:
         system += "\n\nPersistent User Knowledge & Saved Memories:\n" + "\n".join(f"- {l}" for l in knowledge_lines)
 
+    try:
+        from core.context import get_conversation_context
+        ctx = get_conversation_context()
+        recent_turns = ctx.get_recent_dialogue()
+    except Exception:
+        recent_turns = []
+
+    if recent_turns:
+        history_lines = []
+        for turn in recent_turns:
+            history_lines.append(f"User: {turn.user}")
+            history_lines.append(f"JARVIS: {turn.assistant}")
+        system += "\n\nRecent Conversation History:\n" + "\n".join(history_lines)
+        system += "\nPlease maintain continuity with the ongoing discussion above, especially when resolving follow-up questions or pronouns."
+
     return system
 
 
@@ -147,4 +162,61 @@ def ask_ollama(prompt: str, print_output: bool = True, additional_context: Optio
         return None
     except Exception as e:
         print(f"[JARVIS Error] Unexpected error contacting Ollama: {e}")
+        return None
+
+
+TUTORING_SYSTEM_PROMPT = (
+    "You are JARVIS tutoring the user in programming concepts. "
+    "You have a calm, loyal, and supportive persona. "
+    "CRITICAL RULES: "
+    "1. Keep your spoken response small and like a brief summary (strictly 1 to 2 short sentences). "
+    "2. First sentence: State briefly whether the user's answer is correct, partially correct, or incorrect, with a concise reason. "
+    "3. Second sentence: Ask the next beginner-level question to advance the lesson. "
+    "4. Never use markdown formatting, bullets, asterisks, or code blocks. "
+    "5. Never claim to create files, write files to disk, or execute actions. "
+    "6. If the user's answer mentions creating a file (e.g. 'create a file extension.py'), evaluate it as their conceptual answer to the question."
+)
+
+
+def ask_tutoring_evaluation(
+    topic: str,
+    question: str,
+    user_answer: str,
+    step: int = 1,
+    history: Optional[list[dict[str, str]]] = None,
+) -> Optional[str]:
+    """Queries Ollama for a short, voice-tailored evaluation of the user's tutoring answer."""
+    prompt = (
+        f"Topic: {topic}\n"
+        f"Lesson Step: {step}\n"
+        f"Active Question: {question}\n"
+        f"User's Answer: {user_answer}\n\n"
+        f"Evaluate the user's answer concisely and ask the next beginner question."
+    )
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "system": TUTORING_SYSTEM_PROMPT,
+        "stream": False,
+    }
+
+    req = urllib.request.Request(
+        OLLAMA_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            if response.status != 200:
+                return None
+            response_data = json.loads(response.read().decode("utf-8"))
+            answer = response_data.get("response", "").strip()
+            answer = answer.replace("`", "").replace("*", "").replace("#", "").strip()
+            if any(h in answer.lower() for h in ("i have created a file", "i created the file", "i'll create a file", "i will create a file")):
+                return None
+            return answer if answer else None
+    except Exception:
         return None

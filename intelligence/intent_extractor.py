@@ -988,14 +988,26 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
             return extracted_vol
 
     # 7b. Project & App Entities Fallback
+    # Discard purely ambiguous command phrases that lack a specific entity target
+    if re.match(
+        r"^(?:open|launch|start)\s+(?:a\s+|an?\s+|the\s+|my\s+)?(?:project|folder|directory|repo|app|application|program)$",
+        clean_text.lower().strip()
+    ):
+        return None
+
     action_clues = ("open ", "launch ", "start ", "edit ", "develop ", "work on ")
     if any(clean_text.lower().startswith(clue) for clue in action_clues) or " in " in clean_text.lower():
         extracted = query_ollama_structured_extraction(clean_text)
         if extracted and extracted.get("action") in ("open_project", "launch_app"):
+            target_proj = extracted.get("target")
+            if target_proj and any(p in target_proj.lower() for p in ("name of", "target project", "or null", "null", "none")):
+                target_proj = None
+            if extracted["action"] == "open_project" and not target_proj:
+                return None
             return {
                 "action": extracted["action"],
                 "params": {
-                    "project": extracted.get("target"),
+                    "project": target_proj,
                     "app": extracted.get("app"),
                 },
                 "from_ollama": True,
