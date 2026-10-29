@@ -61,15 +61,20 @@ class AppRegistry:
         ]
 
         # 1. Check for custom user AppImage / standalone installations
-        antigravity_bin = Path.home() / "Applications" / "Antigravity IDE" / "antigravity"
-        if antigravity_bin.is_file():
-            self._register_app(
-                AppInfo(
-                    name="Antigravity IDE",
-                    exec_path=str(antigravity_bin),
-                    aliases=self._curated_aliases.get("antigravity", []),
+        for candidate_bin in [
+            Path.home() / "Applications" / "Antigravity IDE" / "antigravity-ide",
+            Path.home() / "Applications" / "Antigravity IDE" / "bin" / "antigravity-ide",
+            Path.home() / "Applications" / "Antigravity IDE" / "antigravity",
+        ]:
+            if candidate_bin.is_file():
+                self._register_app(
+                    AppInfo(
+                        name="Antigravity IDE",
+                        exec_path=str(candidate_bin),
+                        aliases=self._curated_aliases.get("antigravity", []),
+                    )
                 )
-            )
+                break
 
         # 2. Scan standard .desktop files
         for s_dir in search_dirs:
@@ -194,8 +199,18 @@ class AppRegistry:
 class DirectoryResolver:
     """Discovers project directories and known filesystem paths safely."""
 
-    def __init__(self):
-        self.memory = get_memory_store()
+    def __init__(self, memory: Optional[Any] = None):
+        self._memory_override = memory
+
+    @property
+    def memory(self):
+        if self._memory_override is not None:
+            return self._memory_override
+        return get_memory_store()
+
+    @memory.setter
+    def memory(self, val):
+        self._memory_override = val
 
     def resolve_project_directory(self, project_name: str) -> tuple[Optional[str], list[str]]:
         """
@@ -212,7 +227,27 @@ class DirectoryResolver:
         # Repair common speech phonetic variants (e.g. "lens 5" -> "lensify")
         clean_name = re.sub(r"\b(?:lens\s*(?:5|five|fy|ify|i\s*fy|if\s*i)|lensi+fy)\b", "lensify", clean_name, flags=re.IGNORECASE).strip()
 
-        # 1. Check memory store first (< 1ms fast-path)
+        # 1. Resolve references to JARVIS's own codebase/folder
+        raw_clean = project_name.lower().strip()
+        jarvis_home = Path.home() / "jarvis"
+        if not jarvis_home.is_dir():
+            jarvis_home = Path(__file__).resolve().parent.parent
+
+        is_jarvis_ref = (
+            clean_name in ("your", "jarvis", "yourself", "this project", "your project", "current project", "assistant")
+            or raw_clean in (
+                "your folder", "your project", "your directory", "your repo", "your codebase",
+                "jarvis", "jarvis folder", "jarvis project", "jarvis repo", "jarvis directory",
+                "jarvis codebase", "jarvis assistant", "my jarvis folder", "my jarvis project",
+                "open your folder in editor",
+            )
+            or bool(re.search(r"\b(?:your|jarvis)\s+(?:folder|project|directory|repo|codebase)\b", raw_clean))
+        )
+        if is_jarvis_ref and jarvis_home.is_dir():
+            resolved_str = str(jarvis_home.resolve())
+            return resolved_str, [resolved_str]
+
+        # 2. Check memory store first (< 1ms fast-path)
         cached = self.memory.get_project(clean_name)
         if cached and os.path.isdir(cached["resolved_path"]):
             return cached["resolved_path"], [cached["resolved_path"]]

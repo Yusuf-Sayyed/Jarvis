@@ -7,6 +7,7 @@ browser search variations, and low-confidence speech guards.
 import re
 from core.config import EXIT_COMMANDS
 from core.context import get_conversation_context
+from core.memory import get_memory_store
 from intelligence.intent_extractor import extract_smart_intent, extract_volume_intent
 
 CONVERSATIONAL_PREFIXES = (
@@ -708,6 +709,34 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
                 },
             }
 
+    if active_pending == "clarify_run_workflow" and clean_text:
+        candidates = (pending_payload or {}).get("candidates", [])
+        chosen = None
+        for cand in candidates:
+            c_name = (cand.get("name") or cand.get("workflow_id", "")).lower()
+            if c_name in clean_text or clean_text in c_name:
+                chosen = cand
+                break
+        if not chosen:
+            if "first" in clean_text and len(candidates) >= 1:
+                chosen = candidates[0]
+            elif "second" in clean_text and len(candidates) >= 2:
+                chosen = candidates[1]
+            elif "third" in clean_text and len(candidates) >= 3:
+                chosen = candidates[2]
+        if chosen:
+            context.clear_pending()
+            return "SMART_ACTION", {
+                "action": "run_workflow",
+                "params": {
+                    "workflow_id": chosen["workflow_id"],
+                    "steps": chosen["steps"],
+                    "name": chosen.get("name"),
+                    "trigger_text": clean_text,
+                },
+                "from_cache": True,
+            }
+
     if pending_action == "youtube_play" and clean_text:
         return "YOUTUBE_PLAY", {"query": clean_text}
 
@@ -963,6 +992,27 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         return "BROWSER_ACTION", {"action": "forward"}
     if clean_text in ("refresh the page", "refresh page", "refresh", "reload the page", "reload page", "reload"):
         return "BROWSER_ACTION", {"action": "refresh"}
+
+    # 7.8 Explicit Workflow and Saved Workflow Fast-Path (Priority over generic commands)
+    from intelligence.memory_extractor import is_workflow_utterance
+    if is_workflow_utterance(clean_text):
+        smart = extract_smart_intent(clean_text)
+        if smart:
+            return "SMART_ACTION", smart
+
+    # Check if exact spoken command matches a saved workflow in memory
+    saved_wf = get_memory_store().get_workflow_by_trigger(clean_text)
+    if saved_wf:
+        return "SMART_ACTION", {
+            "action": "run_workflow",
+            "params": {
+                "workflow_id": saved_wf["workflow_id"],
+                "steps": saved_wf["steps"],
+                "name": saved_wf.get("name"),
+                "trigger_text": clean_text,
+            },
+            "from_cache": True,
+        }
 
     # 8. Desktop core actions (New tab, windows, applications)
     firefox_tab_triggers = (

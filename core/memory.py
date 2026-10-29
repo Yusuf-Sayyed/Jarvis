@@ -428,15 +428,21 @@ class MemoryStore:
         return None
 
     def get_workflow_by_trigger(self, phrase: str) -> Optional[dict[str, Any]]:
-        """Resolves an enabled and healthy workflow matching a trigger phrase."""
+        """Resolves an enabled and healthy workflow matching a trigger phrase or name."""
         clean_phrase = phrase.lower().strip().rstrip(".?!,").strip()
+        clean_phrase = re.sub(r"\s+", " ", clean_phrase)
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM workflows WHERE is_enabled = 1 AND success_count >= failure_count")
             for row in cursor.fetchall():
                 try:
-                    triggers = [t.lower().strip().rstrip(".?!,").strip() for t in json.loads(row["trigger_phrases_json"])]
-                    if clean_phrase in triggers:
+                    triggers = [
+                        re.sub(r"\s+", " ", t.lower().strip().rstrip(".?!,").strip())
+                        for t in json.loads(row["trigger_phrases_json"])
+                    ]
+                    name_norm = re.sub(r"\s+", " ", (row["name"] or "").lower().strip().rstrip(".?!,").strip())
+                    id_norm = row["workflow_id"].lower().strip()
+                    if clean_phrase in triggers or clean_phrase == name_norm or clean_phrase == id_norm:
                         res = dict(row)
                         res["trigger_phrases"] = triggers
                         res["steps"] = json.loads(res["steps_json"])
@@ -444,6 +450,210 @@ class MemoryStore:
                 except Exception:
                     continue
         return None
+
+    def resolve_workflow_by_spoken_name(
+        self, utterance: str, enabled_only: bool = True
+    ) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]], Optional[str], bool]:
+        """
+        Resolves a spoken voice utterance to a saved workflow.
+
+        Handles:
+          - Direct workflow names/triggers: "open your folder in editor", "start working on lensify"
+          - Natural framed variations:
+              "Run the open your folder in editor workflow."
+              "Run my workflow called open your folder in editor."
+              "Run workflow open your folder in editor."
+              "Execute the open your folder in editor workflow."
+              "Start my workflow called dev mode."
+              "Please run open your folder in editor."
+          - Case differences, punctuation, extra whitespace, and leading articles.
+          - Multi-match ambiguity detection.
+
+        Returns:
+          (matched_workflow, candidate_matches, extracted_target, is_explicit_workflow_run)
+        """
+        raw_u = utterance.strip().rstrip(".?!,").strip()
+        clean_u = raw_u.lower()
+        clean_u = re.sub(r"\s+", " ", clean_u).strip()
+
+        # Strip polite prefixes and suffixes
+        clean_u = re.sub(r"^(?:can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|please\s+)", "", clean_u).strip()
+        clean_u = re.sub(r"(?:\s+for\s+me|\s+please)$", "", clean_u).strip().rstrip(".?!,").strip()
+
+        is_explicit = False
+        target = clean_u
+
+        # 1. "run my workflow called X", "run the workflow named X", "run workflow called X"
+        m1 = re.match(
+            r"^(?:run|execute|launch|start|trigger|play)\s+(?:(?:the|my|a|an)\s+)?(?:workflow\s+)?(?:called|named)\s+['\"]?(.+?)['\"]?(?:\s+workflow)?$",
+            clean_u,
+            flags=re.IGNORECASE,
+        )
+        # 2. "run the X workflow", "run my X workflow", "run a X workflow", "execute the X workflow"
+        m2 = re.match(
+            r"^(?:run|execute|launch|start|trigger|play)\s+(?:(?:the|my|a|an)\s+)?['\"]?(.+?)['\"]?\s+workflow$",
+            clean_u,
+            flags=re.IGNORECASE,
+        )
+        # 3. "run workflow X", "run the workflow X", "execute workflow X"
+        m3 = re.match(
+            r"^(?:run|execute|launch|start|trigger|play)\s+(?:(?:the|my|a|an)\s+)?workflow\s*[,:]?\s*['\"]?(.+?)['\"]?$",
+            clean_u,
+            flags=re.IGNORECASE,
+        )
+        # 4. "run the X", "run my X", "run X"
+        m4 = re.match(
+            r"^(?:run|execute|launch|start|trigger|play)\s+(?:(?:the|my|a|an)\s+)?['\"]?(.+?)['\"]?$",
+            clean_u,
+            flags=re.IGNORECASE,
+        )
+
+        if m1:
+            target = m1.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+            is_explicit = True
+        elif m2:
+            target = m2.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+            is_explicit = True
+        elif m3:
+            target = m3.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+            is_explicit = True
+        elif m4 and "workflow" in clean_u:
+            target = m4.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+            target = re.sub(r"\s+workflow$", "", target, flags=re.IGNORECASE).strip()
+            is_explicit = True
+        elif m4:
+            cand_m4 = m4.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+            target = cand_m4
+        elif "workflow" in clean_u:
+            # Fallback for other phrasing containing 'workflow'
+            sub_m = re.search(r"\bworkflow\b\s*(?:called|named)?\s*['\"]?(.+?)['\"]?$", clean_u)
+            if sub_m:
+                target = sub_m.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+                is_explicit = True
+
+        candidate_targets = [target]
+        if target != clean_u:
+            candidate_targets.append(clean_u)
+        if m4:
+            c4 = m4.group(1).strip().strip("'\"").rstrip(".?!,").strip()
+            if c4 not in candidate_targets:
+                candidate_targets.append(c4)
+
+        # Also strip trailing " workflow" and leading articles
+        extra_cands = []
+        for c in candidate_targets:
+            c_no_wf = re.sub(r"\s+workflow$", "", c, flags=re.IGNORECASE).strip()
+            if c_no_wf and c_no_wf not in candidate_targets and c_no_wf not in extra_cands:
+                extra_cands.append(c_no_wf)
+            c_no_art = re.sub(r"^(?:the|my|a|an)\s+", "", c, flags=re.IGNORECASE).strip()
+            if c_no_art and c_no_art not in candidate_targets and c_no_art not in extra_cands:
+                extra_cands.append(c_no_art)
+        candidate_targets.extend(extra_cands)
+
+        # Retrieve workflows from SQLite
+        workflows = self.list_workflows(include_disabled=not enabled_only)
+        if not workflows:
+            return None, [], target, is_explicit
+
+        def _norm_token_str(s: str) -> str:
+            s = s.lower().strip().rstrip(".?!,").strip()
+            s = re.sub(r"^(?:the|my|a|an)\s+", "", s)
+            s = re.sub(r"\s+workflow$", "", s)
+            s = re.sub(r"[^\w\s]", " ", s)
+            return re.sub(r"\s+", " ", s).strip()
+
+        exact_matches: list[dict[str, Any]] = []
+        norm_matches: list[dict[str, Any]] = []
+        fuzzy_matches: list[tuple[float, dict[str, Any]]] = []
+
+        seen_ids = set()
+
+        for cand in candidate_targets:
+            cand_clean = cand.lower().strip().rstrip(".?!,").strip()
+            cand_norm = _norm_token_str(cand)
+            if not cand_clean:
+                continue
+
+            for wf in workflows:
+                w_id = wf["workflow_id"]
+                name_clean = (wf.get("name") or "").lower().strip().rstrip(".?!,").strip()
+                name_norm = _norm_token_str(wf.get("name") or "")
+                triggers_clean = [
+                    t.lower().strip().rstrip(".?!,").strip()
+                    for t in wf.get("trigger_phrases", [])
+                ]
+                triggers_norm = [_norm_token_str(t) for t in wf.get("trigger_phrases", [])]
+
+                # Exact match against name, triggers, or ID
+                if cand_clean == name_clean or cand_clean in triggers_clean or cand_clean == w_id.lower():
+                    if w_id not in seen_ids:
+                        seen_ids.add(w_id)
+                        exact_matches.append(wf)
+                    continue
+
+                # Normalized match (ignoring articles, punctuation, whitespace)
+                if cand_norm and (cand_norm == name_norm or cand_norm in triggers_norm):
+                    if w_id not in seen_ids:
+                        seen_ids.add(w_id)
+                        norm_matches.append(wf)
+                    continue
+
+                # Token / prefix match for explicit run phrasing (e.g. "run workflow dev")
+                is_token_prefix = False
+                if is_explicit and cand_norm and len(cand_norm) >= 3:
+                    cand_tokens = cand_norm.split()
+                    name_tokens = name_norm.split()
+                    if all(ct in name_tokens for ct in cand_tokens) or any(
+                        all(ct in tn.split() for ct in cand_tokens) for tn in triggers_norm
+                    ) or name_norm.startswith(cand_norm + " ") or cand_norm in name_tokens:
+                        is_token_prefix = True
+
+                if is_token_prefix:
+                    if w_id not in seen_ids:
+                        seen_ids.add(w_id)
+                        fuzzy_matches.append((0.90, wf))
+                    continue
+
+                # Fuzzy match for explicit run phrasing
+                if is_explicit and cand_norm and len(cand_norm) >= 4:
+                    r_name = difflib.SequenceMatcher(None, cand_norm, name_norm).ratio()
+                    r_trigs = [difflib.SequenceMatcher(None, cand_norm, tn).ratio() for tn in triggers_norm if tn]
+                    best_r = max([r_name] + r_trigs) if r_trigs else r_name
+                    if best_r >= 0.85:
+                        if w_id not in seen_ids:
+                            seen_ids.add(w_id)
+                            fuzzy_matches.append((best_r, wf))
+
+        if len(exact_matches) == 1:
+            return exact_matches[0], [], target, is_explicit
+        elif len(exact_matches) > 1:
+            unique_names = set((w.get("name") or "").lower().strip() for w in exact_matches)
+            if len(unique_names) == 1:
+                exact_matches.sort(key=lambda w: float(w.get("last_used") or w.get("created_at") or 0), reverse=True)
+                return exact_matches[0], [], target, is_explicit
+            return None, exact_matches, target, is_explicit
+
+        if len(norm_matches) == 1:
+            return norm_matches[0], [], target, is_explicit
+        elif len(norm_matches) > 1:
+            unique_names = set((w.get("name") or "").lower().strip() for w in norm_matches)
+            if len(unique_names) == 1:
+                norm_matches.sort(key=lambda w: float(w.get("last_used") or w.get("created_at") or 0), reverse=True)
+                return norm_matches[0], [], target, is_explicit
+            return None, norm_matches, target, is_explicit
+
+        if is_explicit:
+            if len(fuzzy_matches) == 1:
+                return fuzzy_matches[0][1], [], target, is_explicit
+            elif len(fuzzy_matches) > 1:
+                fuzzy_matches.sort(key=lambda x: x[0], reverse=True)
+                top_score = fuzzy_matches[0][0]
+                tied = [m[1] for m in fuzzy_matches if abs(m[0] - top_score) < 0.05]
+                if len(tied) == 1:
+                    return tied[0], [], target, is_explicit
+                return None, tied, target, is_explicit
+
+        return None, [], target, is_explicit
 
     def list_workflows(self, include_disabled: bool = False) -> list[dict[str, Any]]:
         """Returns all workflows ordered by most recently used/created."""

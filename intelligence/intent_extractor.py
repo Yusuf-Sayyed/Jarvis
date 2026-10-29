@@ -89,12 +89,15 @@ RE_RENAME_WORKFLOW = re.compile(
 )
 RE_HELP_WORKFLOW = re.compile(
     r"^(?:"
-    r"how\s+(?:can\s+i|do\s+i|to)\s+(?:create|make|teach|add|set\s+up|save)\s+(?:a\s+|new\s+)?workflows?|"
+    r"how\s+(?:can\s+i|do\s+i|to)\s+(?:create|make|teach|add|set\s+up|save)\s+(?:a\s+|new\s+|my\s+)?workflows?|"
     r"how\s+(?:do\s+i|can\s+i|to)\s+teach\s+(?:you\s+)?(?:a\s+)?workflows?|"
+    r"how\s+(?:can\s+i|do\s+i|to)\s+(?:run|execute|trigger|start|launch|call)\s+(?:a\s+|my\s+|the\s+|any\s+)?workflows?|"
     r"how\s+do\s+workflows\s+work|"
+    r"how\s+do\s+i\s+work\s+with\s+workflows?|"
     r"how\s+(?:to\s+use|can\s+i\s+use|do\s+i\s+use)\s+workflows?|"
     r"workflow\s+help|"
-    r"help\s+(?:with\s+)?workflows?"
+    r"help\s+(?:with\s+)?workflows?|"
+    r"explain\s+workflows?"
     r")$",
     re.IGNORECASE,
 )
@@ -775,16 +778,7 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
     memory = get_memory_store()
     context = get_conversation_context()
 
-    # 1. Reusable Workflow Fast-Path in SQLite Memory (< 1ms)
-    wf = memory.get_workflow_by_trigger(clean_text)
-    if wf:
-        return {
-            "action": "run_workflow",
-            "params": {"workflow_id": wf["workflow_id"], "steps": wf["steps"]},
-            "from_cache": True,
-        }
-
-    # 1.5 Workflow Management Commands (< 1ms)
+    # 1. Workflow Management Commands (< 1ms)
     if RE_LIST_WORKFLOWS.match(clean_text):
         return {"action": "list_workflows", "params": {}}
 
@@ -817,11 +811,45 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
         new_n = m_ren.group(2).strip().strip("'\"").rstrip(".?!,").strip()
         return {"action": "rename_workflow", "params": {"old_name": old_n, "new_name": new_n}}
 
-    # 1.8 Conversational Workflow Teaching (< 1ms deterministic)
+    # 1.5 Conversational Workflow Teaching (< 1ms deterministic)
     if not skip_teaching:
         teach_intent = parse_teaching_request(clean_text)
         if teach_intent:
             return teach_intent
+
+    # 1.8 Reusable Workflow Fast-Path by Trigger or Spoken Name (< 1ms)
+    wf, candidates, target_name, is_explicit = memory.resolve_workflow_by_spoken_name(clean_text)
+    if wf:
+        return {
+            "action": "run_workflow",
+            "workflow_id": wf["workflow_id"],
+            "params": {
+                "workflow_id": wf["workflow_id"],
+                "steps": wf["steps"],
+                "name": wf.get("name"),
+                "trigger_text": clean_text,
+            },
+            "from_cache": True,
+        }
+    if candidates and len(candidates) > 1:
+        return {
+            "action": "workflow_ambiguous",
+            "params": {
+                "candidates": candidates,
+                "target": target_name or clean_text,
+            },
+        }
+    if is_explicit:
+        disabled_wf, _, _, _ = memory.resolve_workflow_by_spoken_name(clean_text, enabled_only=False)
+        if disabled_wf and not disabled_wf.get("is_enabled", 1):
+            return {
+                "action": "workflow_disabled",
+                "params": {"name": disabled_wf.get("name") or target_name},
+            }
+        return {
+            "action": "workflow_not_found",
+            "params": {"target": target_name or clean_text},
+        }
 
     # 2. Single-Command Learned Pattern Fast-Path (< 1ms)
     cached = memory.get_learned_pattern(clean_text)

@@ -4,6 +4,7 @@ workflow persistence, and fast-path recall in JARVIS.
 """
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,8 @@ from core.router import route_command
 class TestWorkflowEngine(unittest.TestCase):
 
     def setUp(self):
+        self.was_test_mode = os.environ.get("JARVIS_TEST_MODE")
+        os.environ["JARVIS_TEST_MODE"] = "1"
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test_workflow_mem.sqlite"
         self.memory = MemoryStore(db_path=self.db_path)
@@ -36,6 +39,10 @@ class TestWorkflowEngine(unittest.TestCase):
         self.executor = WorkflowExecutor()
 
     def tearDown(self):
+        if self.was_test_mode is not None:
+            os.environ["JARVIS_TEST_MODE"] = self.was_test_mode
+        else:
+            os.environ.pop("JARVIS_TEST_MODE", None)
         import core.memory as mem_mod
         mem_mod._MEMORY_INSTANCE = self.orig_mem
         import actions.workflow as wf_mod
@@ -596,6 +603,10 @@ class TestWorkflowEngine(unittest.TestCase):
             "how to create a workflow",
             "how do workflows work",
             "Jarvis, how can I create a workflow?",
+            "how do I run a workflow?",
+            "how to run a workflow",
+            "how can I run my workflow",
+            "how do I execute a workflow",
         ]
         for q in queries:
             intent, params = detect_intent(q)
@@ -606,6 +617,179 @@ class TestWorkflowEngine(unittest.TestCase):
         should_cont, pending = route_command("how can I create a workflow?")
         self.assertTrue(should_cont)
         self.assertIsNone(pending)
+
+    def test_voice_workflow_help_has_no_chatbox_assumptions(self):
+        """Requirement 8: Remove assumptions about chatbox and provide voice instructions."""
+        from io import StringIO
+        import sys
+
+        for q in ("How do I run a workflow?", "How to run a workflow", "Workflow help"):
+            intent, params = detect_intent(q)
+            self.assertEqual(intent, "SMART_ACTION")
+            self.assertEqual(params["action"], "workflow_help")
+
+        with patch("interfaces.speech.speak") as mock_speak:
+            route_command("How do I run a workflow?")
+            mock_speak.assert_called()
+            spoken_text = mock_speak.call_args[0][0].lower()
+            # Spoken response must NEVER refer to chatbox or typing
+            self.assertNotIn("chatbox", spoken_text)
+            self.assertNotIn("chat box", spoken_text)
+            self.assertNotIn("type", spoken_text)
+            # Spoken response must explain voice execution and trigger phrasing
+            self.assertIn("voice", spoken_text)
+            self.assertIn("run", spoken_text)
+
+    def test_saved_workflow_lookup_and_case_variations(self):
+        """Requirement 2 & 4: Resolve saved workflow by name/trigger with case differences and minor variations."""
+        steps = [{"action": "open_project", "params": {"project": "jarvis", "app": "editor", "path": str(Path.home() / "jarvis")}}]
+        self.memory.save_workflow(
+            workflow_id="wf_editor_folder",
+            trigger_phrases=["open your folder in editor"],
+            steps=steps,
+            name="Open Your Folder In Editor",
+        )
+
+        # 1. Lookup by trigger phrase
+        wf = self.memory.get_workflow_by_trigger("open your folder in editor")
+        self.assertIsNotNone(wf)
+        self.assertEqual(wf["workflow_id"], "wf_editor_folder")
+
+        # 2. Case differences & trailing punctuation
+        wf_case = self.memory.get_workflow_by_trigger("Open Your Folder In Editor.")
+        self.assertIsNotNone(wf_case)
+
+        # 3. resolve_workflow_by_spoken_name
+        wf_res, cands, target, is_exp = self.memory.resolve_workflow_by_spoken_name("OPEN YOUR FOLDER IN EDITOR!")
+        self.assertIsNotNone(wf_res)
+        self.assertEqual(wf_res["workflow_id"], "wf_editor_folder")
+
+        # 4. Leading articles
+        wf_art, _, _, _ = self.memory.resolve_workflow_by_spoken_name("the open your folder in editor")
+        self.assertIsNotNone(wf_art)
+
+    def test_spoken_name_matching_natural_variations(self):
+        """Requirement 3 & 5: Support natural voice commands and prioritize over generic Ollama conversation."""
+        steps = [{"action": "open_project", "params": {"project": "jarvis", "app": "editor", "path": str(Path.home() / "jarvis")}}]
+        self.memory.save_workflow(
+            workflow_id="wf_editor_folder",
+            trigger_phrases=["open your folder in editor"],
+            steps=steps,
+            name="Open Your Folder In Editor",
+        )
+
+        test_utterances = [
+            "Open your folder in editor.",
+            "Run the open your folder in editor workflow.",
+            "Run my workflow called open your folder in editor.",
+            "Run workflow open your folder in editor.",
+            "Execute the open your folder in editor workflow.",
+            "Please run the open your folder in editor workflow.",
+            "Run open your folder in editor.",
+        ]
+
+        for utt in test_utterances:
+            intent, params = detect_intent(utt)
+            self.assertEqual(intent, "SMART_ACTION", f"Failed to detect SMART_ACTION for: {utt}")
+            self.assertEqual(params.get("action"), "run_workflow", f"Expected run_workflow for: {utt}")
+            w_id = params.get("workflow_id") or params.get("params", {}).get("workflow_id")
+            self.assertEqual(w_id, "wf_editor_folder", f"Wrong workflow_id for: {utt}")
+
+    @patch("subprocess.Popen")
+    @patch("interfaces.speech.speak")
+    def test_execution_routing_opens_antigravity_with_jarvis_folder(self, mock_speak, mock_popen):
+        """Requirement 6: Execute workflow opening Antigravity with actual ~/jarvis folder path."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        steps = [{"action": "open_project", "params": {"project": "jarvis", "app": "editor", "path": str(Path.home() / "jarvis")}}]
+        self.memory.save_workflow(
+            workflow_id="wf_editor_folder",
+            trigger_phrases=["open your folder in editor"],
+            steps=steps,
+            name="Open Your Folder In Editor",
+        )
+
+        # Route through voice command
+        should_cont, pending = route_command("Run the open your folder in editor workflow.")
+        self.assertTrue(should_cont)
+        self.assertIsNone(pending)
+
+        # Verify Antigravity was launched with the jarvis folder path
+        mock_popen.assert_called()
+        call_args = mock_popen.call_args
+        launch_cmd = call_args[0][0]
+        launch_cwd = call_args[1].get("cwd")
+
+        # Verify command contains Antigravity and path to jarvis
+        self.assertTrue(any("antigravity" in str(arg).lower() for arg in launch_cmd))
+        self.assertTrue(any(str(Path.home() / "jarvis") in str(arg) for arg in launch_cmd))
+        self.assertEqual(launch_cwd, str(Path.home() / "jarvis"))
+
+        # Verify voice confirmation confirmed execution
+        mock_speak.assert_called()
+        spoken_msg = mock_speak.call_args[0][0]
+        self.assertIn("Workflow completed successfully", spoken_msg)
+
+    @patch("interfaces.speech.speak")
+    def test_workflow_failure_explains_actual_problem_through_voice(self, mock_speak):
+        """Requirement 7: If a workflow fails, explain the actual problem through voice and never claim success."""
+        # Step with nonexistent folder
+        steps = [{"action": "open_project", "params": {"project": "nonexistent_proj_xyz_123", "path": "/path/to/nonexistent_xyz"}}]
+        self.memory.save_workflow(
+            workflow_id="wf_faulty",
+            trigger_phrases=["broken workflow"],
+            steps=steps,
+            name="Broken Workflow",
+        )
+
+        should_cont, pending = route_command("Run the broken workflow workflow.")
+        self.assertTrue(should_cont)
+
+        # Voice output must explain the failure and not claim success
+        mock_speak.assert_called()
+        spoken_msg = mock_speak.call_args[0][0]
+        self.assertNotIn("completed successfully", spoken_msg.lower())
+        self.assertIn("could not be located", spoken_msg.lower())
+
+    @patch("interfaces.speech.speak")
+    def test_missing_workflow_explains_problem_through_voice(self, mock_speak):
+        """Requirement 7: If a workflow is missing, explain the actual problem through voice."""
+        should_cont, pending = route_command("Run my workflow called deploy website.")
+        self.assertTrue(should_cont)
+        self.assertIsNone(pending)
+
+        mock_speak.assert_called()
+        spoken_msg = mock_speak.call_args[0][0]
+        self.assertIn("could not find a workflow named 'deploy website'", spoken_msg.lower())
+
+    @patch("interfaces.speech.speak")
+    def test_ambiguous_workflow_explains_problem_through_voice(self, mock_speak):
+        """Requirement 7: Ambiguous workflow commands ask for clarification through voice."""
+        self.memory.save_workflow(
+            workflow_id="wf_dev_1",
+            trigger_phrases=["run dev environment"],
+            steps=[{"action": "volume_set", "params": {"percentage": 50}}],
+            name="Dev Full",
+        )
+        self.memory.save_workflow(
+            workflow_id="wf_dev_2",
+            trigger_phrases=["run dev mini"],
+            steps=[{"action": "volume_set", "params": {"percentage": 40}}],
+            name="Dev Mini",
+        )
+
+        # "run workflow dev" matches both Dev Full and Dev Mini
+        should_cont, pending = route_command("Run workflow dev")
+        self.assertTrue(should_cont)
+        self.assertEqual(pending, "clarify_run_workflow")
+
+        mock_speak.assert_called()
+        spoken_msg = mock_speak.call_args[0][0]
+        self.assertIn("multiple workflows matching", spoken_msg.lower())
+        self.assertIn("dev full", spoken_msg.lower())
+        self.assertIn("dev mini", spoken_msg.lower())
 
     @patch("actions.resolver.DirectoryResolver.resolve_project_directory")
     def test_teach_workflow_editor_and_antigravity_aliases(self, mock_dir_resolve):
@@ -640,9 +824,20 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(step3["action"], "open_project")
         self.assertIn("Antigravity", step3["params"]["app"])
 
+        # 4. Teaching 'open your folder in editor'
+        mock_dir_resolve.return_value = (str(Path.home() / "jarvis"), [str(Path.home() / "jarvis")])
+        intent4 = extract_smart_intent("When I say open your folder in editor, open your folder in editor.")
+        self.assertIsNotNone(intent4)
+        self.assertEqual(intent4["action"], "teach_workflow")
+        self.assertEqual(intent4["params"]["trigger"], "open your folder in editor")
+        self.assertEqual(len(intent4["params"]["steps"]), 1)
+        step4 = intent4["params"]["steps"][0]
+        self.assertEqual(step4["action"], "open_project")
+        self.assertIn("Antigravity", step4["params"]["app"])
+        self.assertEqual(step4["params"]["path"], str(Path.home() / "jarvis"))
+
 
 if __name__ == "__main__":
-    import json
     unittest.main()
 
 

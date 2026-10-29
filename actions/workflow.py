@@ -48,6 +48,8 @@ class WorkflowExecutor:
                 project = params.get("project")
                 app_name = params.get("app") or "editor"
                 target_path = params.get("path")
+                if target_path:
+                    target_path = os.path.expanduser(target_path)
 
                 if not target_path or not os.path.isdir(target_path):
                     target_path, candidates = self.dir_resolver.resolve_project_directory(project)
@@ -58,7 +60,11 @@ class WorkflowExecutor:
                     return False, f"Workflow halted at step {idx + 1}: Project folder '{project}' could not be located."
 
                 app_info = self.app_registry.resolve_application(app_name)
-                if not app_info or not shutil.which(app_info.exec_path):
+                is_valid_bin = app_info and (
+                    shutil.which(app_info.exec_path)
+                    or (os.path.isfile(app_info.exec_path) and os.access(app_info.exec_path, os.X_OK))
+                )
+                if not is_valid_bin:
                     if workflow_id:
                         self.memory.record_workflow_failure(workflow_id)
                     return False, f"Workflow halted at step {idx + 1}: Application '{app_name}' is not installed."
@@ -92,6 +98,8 @@ class WorkflowExecutor:
             # 2. Step: launch_terminal_at
             elif action == "launch_terminal_at":
                 target_path = params.get("path") or shared_path or self.context.get_recent_target_path()
+                if target_path:
+                    target_path = os.path.expanduser(target_path)
                 if not target_path or not os.path.isdir(target_path):
                     if workflow_id:
                         self.memory.record_workflow_failure(workflow_id)

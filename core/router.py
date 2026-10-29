@@ -186,16 +186,22 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 name=w_name,
             )
             trigger_str = f"'{triggers[0]}'" if triggers else "your trigger"
-            print(f'\n[JARVIS] "Workflow \'{w_name}\' saved successfully, Sir. You can run it anytime by saying {trigger_str}."\n')
+            save_msg = f"Workflow '{w_name}' saved successfully, Sir. You can run it anytime by saying {trigger_str}."
+            print(f'\n[JARVIS] "{save_msg}"\n')
+            speak(save_msg)
         elif action == "confirm_delete_workflow":
             memory = get_memory_store()
             w_id = payload.get("workflow_id")
             w_name = payload.get("name") or w_id
             ok = memory.delete_workflow(w_id)
             if ok:
-                print(f'\n[JARVIS] "Workflow \'{w_name}\' has been deleted, Sir."\n')
+                del_msg = f"Workflow '{w_name}' has been deleted, Sir."
+                print(f'\n[JARVIS] "{del_msg}"\n')
+                speak(del_msg)
             else:
-                print(f'\n[JARVIS Error] Could not delete workflow \'{w_name}\'.\n')
+                err_msg = f"Could not delete workflow '{w_name}', Sir."
+                print(f'\n[JARVIS Error] {err_msg}\n')
+                speak(err_msg)
         elif action == "confirm_workflow_folder_choice":
             memory = get_memory_store()
             chosen_path = payload.get("chosen_path")
@@ -369,9 +375,12 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         if smart_action == "list_workflows":
             workflows = memory.list_workflows(include_disabled=True)
             if not workflows:
-                print('\n[JARVIS] "You have no saved workflows, Sir."\n')
+                msg = "You have no saved workflows, Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             else:
                 print(f"\n[JARVIS] \"You have {len(workflows)} saved workflow(s), Sir:\"")
+                names = []
                 for idx, wf in enumerate(workflows, 1):
                     status = "enabled" if wf.get("is_enabled", 1) else "disabled"
                     name = wf.get("name") or wf.get("workflow_id")
@@ -379,16 +388,22 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                     step_count = len(wf.get("steps", []))
                     print(f"  {idx}. {name} [{status}] - {step_count} step(s)")
                     print(f"     Triggers: {triggers}")
+                    names.append(f"{name}")
                 print()
+                speak(f"You have {len(workflows)} saved workflow(s), Sir: {', '.join(names)}.")
             return True, None
 
         # Workflow Help & Teaching Instructions
         if smart_action == "workflow_help":
-            print(
-                '\n[JARVIS] "To teach me a workflow, Sir, say: \'When I say [trigger phrase], [action 1] and [action 2]\'. '
-                'For example: \'When I say start working on Lensify, open Lensify in my editor and open a terminal in that project folder.\' '
-                'I will validate the actions, confirm the setup, and save it to your memory for automatic execution."\n'
+            help_msg = (
+                "You can manage workflows entirely by voice, Sir. "
+                "To teach me a workflow, say: 'When I say [trigger phrase], [action 1] and [action 2]'. "
+                "For example: 'When I say open your folder in editor, open your folder in editor'. "
+                "To run a saved workflow, simply speak its name, or say 'run the [name] workflow'. "
+                "You can also say 'list workflows', 'rename workflow', or 'delete workflow'."
             )
+            print(f'\n[JARVIS] "{help_msg}"\n')
+            speak(help_msg)
             return True, None
 
         # Workflow Management: Inspect
@@ -396,7 +411,9 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             target = smart_params.get("workflow_name", "")
             wf = memory.find_workflow(target)
             if not wf:
-                print(f'\n[JARVIS] "I could not find a workflow matching \'{target}\', Sir."\n')
+                msg = f"I could not find a workflow matching '{target}', Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             else:
                 status = "enabled" if wf.get("is_enabled", 1) else "disabled"
                 name = wf.get("name") or wf.get("workflow_id")
@@ -414,6 +431,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                     desc = step.get("description") or f"{step.get('action')}: {step.get('params')}"
                     print(f"    {s_idx}. {desc}")
                 print()
+                speak(f"Workflow {name} is {status} with {len(wf.get('steps', []))} steps.")
             return True, None
 
         # Workflow Management: Enable / Disable
@@ -424,30 +442,42 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             if wf:
                 ok = memory.set_workflow_status(wf["workflow_id"], enabled)
                 state_str = "enabled" if enabled else "disabled"
-                print(f'\n[JARVIS] "Workflow \'{wf.get("name")}\' has been {state_str}, Sir."\n')
+                msg = f"Workflow '{wf.get('name')}' has been {state_str}, Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             else:
-                print(f'\n[JARVIS] "I could not find a workflow matching \'{target}\', Sir."\n')
+                msg = f"I could not find a workflow matching '{target}', Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             return True, None
 
         # Workflow Management: Delete (Direct Deletion when target is specified)
         if smart_action == "delete_workflow":
             target = smart_params.get("workflow_name", "")
             if not target:
-                print('\n[JARVIS] "Which workflow would you like me to delete, Sir?"\n')
+                prompt_msg = "Which workflow would you like me to delete, Sir?"
+                print(f'\n[JARVIS] "{prompt_msg}"\n')
+                speak(prompt_msg)
                 context.set_pending("delete_workflow_prompt")
                 return True, "delete_workflow_prompt"
 
             wf = memory.find_workflow(target)
             if not wf:
-                print(f'\n[JARVIS] "I could not find a workflow matching \'{target}\', Sir."\n')
+                msg = f"I could not find a workflow matching '{target}', Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
                 return True, None
 
             ok = memory.delete_workflow(wf["workflow_id"])
             if ok:
                 context.clear_pending()
-                print(f'\n[JARVIS] "Workflow \'{wf.get("name")}\' has been deleted, Sir."\n')
+                msg = f"Workflow '{wf.get('name')}' has been deleted, Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             else:
-                print(f'\n[JARVIS Error] Could not delete workflow \'{wf.get("name")}\'.\n')
+                msg = f"Could not delete workflow '{wf.get('name')}'.\n"
+                print(f'\n[JARVIS Error] {msg}')
+                speak(f"Could not delete workflow '{wf.get('name')}', Sir.")
             return True, None
 
         # Workflow Management: Rename
@@ -456,9 +486,13 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             new_name = smart_params.get("new_name", "")
             ok = memory.update_workflow(old_name, name=new_name)
             if ok:
-                print(f'\n[JARVIS] "Workflow has been renamed from \'{old_name}\' to \'{new_name}\', Sir."\n')
+                msg = f"Workflow has been renamed from '{old_name}' to '{new_name}', Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             else:
-                print(f'\n[JARVIS] "I could not find a workflow named \'{old_name}\', Sir."\n')
+                msg = f"I could not find a workflow named '{old_name}', Sir."
+                print(f'\n[JARVIS] "{msg}"\n')
+                speak(msg)
             return True, None
 
         # Multi-Step Workflows (Chained or Saved)
@@ -474,9 +508,38 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 workflow_id=workflow_id,
             )
             if success:
-                print(f"[JARVIS] Workflow completed successfully: {msg}")
+                res_msg = f"Workflow completed successfully: {msg}"
+                print(f"[JARVIS] {res_msg}")
+                speak(res_msg)
             else:
-                print(f"[JARVIS Error] {msg}")
+                fail_msg = f"Workflow failed: {msg}" if not msg.startswith("Workflow") else msg
+                print(f"[JARVIS Error] {fail_msg}")
+                speak(fail_msg)
+            return True, None
+
+        if smart_action == "workflow_not_found":
+            target = smart_params.get("target", "")
+            msg = f"I could not find a workflow named '{target}', Sir."
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            return True, None
+
+        if smart_action == "workflow_ambiguous":
+            target = smart_params.get("target", "")
+            candidates = smart_params.get("candidates", [])
+            names = [w.get("name") or w.get("workflow_id") for w in candidates]
+            names_str = ", ".join(f"'{n}'" for n in names)
+            msg = f"I found multiple workflows matching '{target}': {names_str}. Which one would you like me to run, Sir?"
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            context.set_pending("clarify_run_workflow", {"candidates": candidates, "target": target})
+            return True, "clarify_run_workflow"
+
+        if smart_action == "workflow_disabled":
+            name = smart_params.get("name", "")
+            msg = f"Workflow '{name}' is currently disabled, Sir. You can enable it by saying 'enable workflow {name}'."
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
             return True, None
 
         # Desktop Audio Controls
