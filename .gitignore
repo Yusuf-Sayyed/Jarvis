@@ -18,3 +18,4 @@ models/
 
 # Compiled local binaries
 bin/
+!bin/launch_jarvis.sh
