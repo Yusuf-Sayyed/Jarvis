@@ -173,8 +173,9 @@ def stop_speech():
 
 def reset_speech_state():
     """Resets speaking and cooldown states (used in tests and shutdown)."""
-    global _IS_SPEAKING, _COOLDOWN_UNTIL, _ACTIVE_PROC, _LAST_SPOKEN
+    global _IS_SPEAKING, _COOLDOWN_UNTIL, _ACTIVE_PROC, _LAST_SPOKEN, _CACHED_PLAYER_BIN
     stop_speech()
+    _CACHED_PLAYER_BIN = None
     with _STATE_LOCK:
         _IS_SPEAKING = False
         _COOLDOWN_UNTIL = 0.0
@@ -338,6 +339,8 @@ def _synthesize_kokoro(text: str, wav_path: str) -> bool:
         _log_diag(
             f"Kokoro generated in {gen_time:.2f}s (samples={audio.size}, rate={sample_rate}Hz)"
         )
+        from core.diagnostics import log_timing
+        log_timing("Kokoro generation", gen_time, f"samples={audio.size}, rate={sample_rate}Hz")
         return True
     except Exception as e:
         _log_diag(f"Kokoro audio generation failed: {e}")
@@ -473,6 +476,18 @@ def _synthesize_to_wav(text: str) -> tuple[Optional[str], int, float]:
 
 
 
+_CACHED_PLAYER_BIN: Optional[str] = None
+
+
+def _get_player_bin() -> Optional[str]:
+    if os.environ.get("JARVIS_TEST_MODE"):
+        return shutil.which("pw-play") or shutil.which("paplay") or shutil.which("aplay")
+    global _CACHED_PLAYER_BIN
+    if _CACHED_PLAYER_BIN is None:
+        _CACHED_PLAYER_BIN = shutil.which("pw-play") or shutil.which("paplay") or shutil.which("aplay")
+    return _CACHED_PLAYER_BIN
+
+
 def _play_wav_file(wav_path: str, duration: float) -> bool:
     """
     Plays a WAV file using pw-play (or paplay / aplay) with PipeWire buffer draining.
@@ -480,7 +495,7 @@ def _play_wav_file(wav_path: str, duration: float) -> bool:
     """
     global _ACTIVE_PROC
 
-    player_bin = shutil.which("pw-play") or shutil.which("paplay") or shutil.which("aplay")
+    player_bin = _get_player_bin()
     if not player_bin:
         _log_diag("No audio player binary found (pw-play, paplay, aplay)")
         return False
@@ -510,6 +525,8 @@ def _play_wav_file(wav_path: str, duration: float) -> bool:
             return False
 
         elapsed = time.time() - t0
+        from core.diagnostics import log_timing
+        log_timing("Audio playback", elapsed, f"player={player_name}, duration={duration:.2f}s")
         if proc.returncode == 0:
             _log_diag(f"Playback completed successfully in {elapsed:.2f}s")
             return True
@@ -641,6 +658,27 @@ def _playback_worker_loop():
 
             job.done_event.set()
             _SPEECH_QUEUE.task_done()
+
+
+def warmup_speech_engine():
+    """Warms up the Kokoro TTS engine in a background daemon thread to eliminate first-audio delay."""
+    def _do_warmup():
+        try:
+            get_kokoro_engine()
+        except Exception:
+            pass
+    threading.Thread(target=_do_warmup, daemon=True, name="Kokoro-Warmup-Thread").start()
+
+
+def wait_for_speech_completion(timeout: float = TTS_MAX_TIMEOUT_SECONDS) -> bool:
+    """Waits until all pending speech jobs in the queue finish playing."""
+    start = time.perf_counter()
+    while time.perf_counter() - start < timeout:
+        with _STATE_LOCK:
+            if not _IS_SPEAKING and _SPEECH_QUEUE.empty():
+                return True
+        time.sleep(0.05)
+    return False
 
 
 def _ensure_worker_started():

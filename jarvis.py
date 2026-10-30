@@ -28,6 +28,11 @@ from core.wake_word import (
     has_greeted_this_login_session,
     mark_greeted_this_login_session,
 )
+from core.shutdown import (
+    perform_clean_shutdown,
+    register_audio_context,
+    register_lock_release_callback,
+)
 from interfaces.speech import speak
 
 _LOCK_FILE_OBJ = None
@@ -155,6 +160,8 @@ def main():
         print("[JARVIS] Another instance is already running. Exiting cleanly to avoid duplicate listeners.")
         sys.exit(0)
 
+    register_lock_release_callback(release_instance_lock)
+
     if "--test-greeting" in sys.argv:
         print("[JARVIS] Testing startup greeting...")
         audio_mgr, stream = init_audio_stream()
@@ -181,6 +188,7 @@ def main():
 
     # 3. Open PyAudio audio stream
     audio_mgr, stream = init_audio_stream()
+    register_audio_context(stream=stream, audio_mgr=audio_mgr, speech_engine=speech_engine)
 
     print_standby_status()
 
@@ -250,12 +258,10 @@ def main():
 
                 # Global exit commands
                 clean = normalize_spoken_text(spoken_text)
-                if any(clean == cmd or clean.startswith(cmd) for cmd in EXIT_COMMANDS):
+                if any(clean == cmd or clean.startswith(cmd) or clean.endswith(cmd) for cmd in EXIT_COMMANDS):
                     print(f"\n[Heard] \"{spoken_text}\"")
                     print("[Intent: EXIT]")
-                    print("[JARVIS] Goodbye, Sir. Systems powering down.")
-                    print("[STATUS: SHUTDOWN | Systems offline]")
-                    print("=" * 60)
+                    perform_clean_shutdown(stream, audio_mgr, speech_engine, speak_farewell=True)
                     break
 
                 has_wake, remaining_command = extract_wake_command(spoken_text)
@@ -277,8 +283,7 @@ def main():
                             drain_audio_stream(stream)
                             speech_engine.reset_buffers()
                             if not should_continue:
-                                print("[STATUS: SHUTDOWN | Systems offline]")
-                                print("=" * 60)
+                                perform_clean_shutdown(stream, audio_mgr, speech_engine, speak_farewell=True)
                                 break
                             session.reset_timer()
                             remaining_str = format_time_remaining(session.remaining_seconds())
@@ -318,8 +323,7 @@ def main():
                     drain_audio_stream(stream)
                     speech_engine.reset_buffers()
                     if not should_continue:
-                        print("[STATUS: SHUTDOWN | Systems offline]")
-                        print("=" * 60)
+                        perform_clean_shutdown(stream, audio_mgr, speech_engine, speak_farewell=True)
                         break
                     session.reset_timer()
                     remaining_str = format_time_remaining(session.remaining_seconds())
@@ -328,19 +332,19 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[JARVIS] Stopped by user (Ctrl+C). Goodbye, Sir!")
+        perform_clean_shutdown(
+            stream if "stream" in locals() else None,
+            audio_mgr if "audio_mgr" in locals() else None,
+            speech_engine if "speech_engine" in locals() else None,
+            speak_farewell=False,
+        )
     finally:
-        try:
-            if "stream" in locals() and stream is not None:
-                stream.stop_stream()
-                stream.close()
-        except Exception:
-            pass
-        try:
-            if "audio_mgr" in locals() and audio_mgr is not None:
-                audio_mgr.terminate()
-        except Exception:
-            pass
-        release_instance_lock()
+        perform_clean_shutdown(
+            stream if "stream" in locals() else None,
+            audio_mgr if "audio_mgr" in locals() else None,
+            speech_engine if "speech_engine" in locals() else None,
+            speak_farewell=False,
+        )
 
 
 if __name__ == "__main__":

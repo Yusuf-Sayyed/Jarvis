@@ -48,6 +48,13 @@ RE_APP_LAUNCH_COMMAND = re.compile(
     re.IGNORECASE,
 )
 
+RE_OPEN_FOLDER_COMMAND = re.compile(
+    r"^(?:open|launch|explore|show)\s+(?:(?:a|an|the|my)\s+)?(?:folder|directory)\s+(.+?)(?:\s+(?:for\s+me|please))?$|"
+    r"^(?:open|launch|explore|show)\s+(?:(?:a|an|the|my)\s+)?(.+?)\s+(?:folder|directory)(?:\s+(?:for\s+me|please))?$|"
+    r"^(?:open|launch)\s+(?:my\s+)?(downloads|download|documents|document|desktop|pictures|picture|photos|music|videos|video|home|projects)(?:\s+(?:for\s+me|please))?$",
+    re.IGNORECASE,
+)
+
 UNCLEAR_NOISE = {
     "um", "uh", "ah", "the", "a", "an", "huh", "oh", "hmm", "and", "or", "so", "to"
 }
@@ -1000,8 +1007,9 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         if smart:
             return "SMART_ACTION", smart
 
-    # Check if exact spoken command matches a saved workflow in memory
-    saved_wf = get_memory_store().get_workflow_by_trigger(clean_text)
+    # Check if spoken command matches a saved workflow in SQLite memory by name, trigger, or ID
+    mem_store = get_memory_store()
+    saved_wf, wf_candidates, target_name, is_explicit = mem_store.resolve_workflow_by_spoken_name(clean_text)
     if saved_wf:
         return "SMART_ACTION", {
             "action": "run_workflow",
@@ -1013,6 +1021,52 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
             },
             "from_cache": True,
         }
+    if wf_candidates and len(wf_candidates) > 1:
+        return "SMART_ACTION", {
+            "action": "workflow_ambiguous",
+            "params": {
+                "candidates": wf_candidates,
+                "target": target_name or clean_text,
+            },
+        }
+    if is_explicit:
+        disabled_wf, _, _, _ = mem_store.resolve_workflow_by_spoken_name(clean_text, enabled_only=False)
+        if disabled_wf and not disabled_wf.get("is_enabled", 1):
+            return "SMART_ACTION", {
+                "action": "workflow_disabled",
+                "params": {"name": disabled_wf.get("name") or target_name},
+            }
+        return "SMART_ACTION", {
+            "action": "workflow_not_found",
+            "params": {"target": target_name or clean_text},
+        }
+
+    # 7.9 Explicit Folder / Directory Launch Actions
+    m_folder = RE_OPEN_FOLDER_COMMAND.match(clean_text)
+    if m_folder:
+        folder_target = next((g for g in m_folder.groups() if g), "").strip()
+        if folder_target and not any(k in folder_target.lower() for k in (" in ", " into ", "tab", "window")):
+            folder_clean = re.sub(r"^(?:my|the|a|an)\s+", "", folder_target.lower()).strip()
+            folder_clean = re.sub(r"(?:\s+(?:folder|directory))+$", "", folder_clean).strip()
+            if folder_clean in ("downloads", "download"):
+                return "DESKTOP_ACTION", {"action": "open_downloads"}
+            import os
+            from actions.resolver import get_directory_resolver
+            dir_res = get_directory_resolver()
+            resolved_p, cands = dir_res.resolve_project_directory(folder_clean)
+            if resolved_p and os.path.isdir(resolved_p):
+                return "DESKTOP_ACTION", {"action": "open_folder", "folder": folder_clean, "path": resolved_p}
+            elif cands and len(cands) > 1:
+                return "CLARIFY_ACTION", {
+                    "action": "clarify_folder",
+                    "candidates": cands,
+                    "question": f"I found multiple folders matching '{folder_clean}'. Which one would you like me to open, Sir?",
+                    "raw": text,
+                }
+            elif folder_clean in ("documents", "document", "desktop", "pictures", "picture", "photos", "music", "videos", "video", "home", "projects"):
+                return "DESKTOP_ACTION", {"action": "open_folder", "folder": folder_clean}
+            else:
+                return "DESKTOP_ACTION", {"action": "open_folder_not_found", "folder": folder_clean}
 
     # 8. Desktop core actions (New tab, windows, applications)
     firefox_tab_triggers = (

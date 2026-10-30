@@ -46,7 +46,11 @@ class AppRegistry:
             "dolphin": ["dolphin", "files", "file manager"],
             "spectacle": ["spectacle", "screenshot", "capture"],
             "kwrite": ["kwrite", "text editor", "notepad"],
-            "plasma-systemmonitor": ["system monitor", "task manager", "plasma system monitor", "activity monitor"],
+            "plasma-systemmonitor": ["system monitor", "task monitor", "task manager", "plasma system monitor", "activity monitor"],
+            "kcalc": ["calculator", "calc", "kcalc", "gnome-calculator"],
+            "vlc": ["vlc", "vlc media player", "media player"],
+            "kate": ["kate", "advanced editor", "code editor"],
+            "systemsettings": ["settings", "system settings", "control center"],
         }
 
     def scan_applications(self, force_rescan: bool = False):
@@ -172,26 +176,33 @@ class AppRegistry:
         """Resolves a spoken application query to an installed AppInfo."""
         self.scan_applications()
         clean = spoken_name.lower().strip()
+        clean_norm = re.sub(r"^(?:the|my|a|an)\s+", "", clean).strip()
+        clean_norm = re.sub(r"(?:\s+(?:application|app|program|tool|window))+$", "", clean_norm).strip()
 
         # Check default browser explicitly
-        if clean in ("browser", "web browser", "default browser", "the browser"):
+        if clean in ("browser", "web browser", "default browser", "the browser") or clean_norm in ("browser", "web browser", "default browser"):
             default_browser = self.get_default_browser()
             if default_browser:
                 return default_browser
 
         # Check direct alias/name match
-        if clean in self._apps:
-            return self._apps[clean]
+        for probe in (clean, clean_norm):
+            if probe in self._apps:
+                return self._apps[probe]
 
         # Check binary in system PATH directly
-        bin_path = shutil.which(clean)
-        if bin_path:
-            return AppInfo(name=clean.capitalize(), exec_path=bin_path, aliases=[clean])
+        for probe in (clean, clean_norm):
+            bin_path = shutil.which(probe)
+            if bin_path:
+                return AppInfo(name=probe.capitalize(), exec_path=bin_path, aliases=[probe])
 
         # Substring / fuzzy match
-        for key, app in self._apps.items():
-            if clean in key or key in clean:
-                return app
+        for probe in (clean_norm, clean):
+            if not probe:
+                continue
+            for key, app in self._apps.items():
+                if probe == key or (len(probe) >= 3 and (probe in key or key in probe)):
+                    return app
 
         return None
 

@@ -84,11 +84,69 @@ def open_terminal() -> bool:
         return False
 
 
+_KONSOLE_BIN = shutil.which("konsole")
+_SPECTACLE_BIN = shutil.which("spectacle")
+_QDBUS_BIN = shutil.which("qdbus-qt6") or shutil.which("qdbus")
+_OPENER_BIN = shutil.which("xdg-open") or shutil.which("dolphin") or "xdg-open"
+
+
+def open_folder(folder_target: str) -> tuple[bool, str]:
+    """
+    Opens a folder using the system file manager (xdg-open / dolphin).
+    Supports common folder names ('downloads', 'documents', 'desktop', 'pictures',
+    'music', 'videos', 'home', 'projects') as well as arbitrary resolved project paths.
+    """
+    import re
+    clean = folder_target.lower().strip()
+    clean = re.sub(r"^(?:open|launch)\s+", "", clean)
+    clean = re.sub(r"(?:\s+(?:folder|directory))+$", "", clean).strip()
+
+    common_map = {
+        "downloads": os.path.expanduser("~/Downloads"),
+        "download": os.path.expanduser("~/Downloads"),
+        "documents": os.path.expanduser("~/Documents"),
+        "document": os.path.expanduser("~/Documents"),
+        "desktop": os.path.expanduser("~/Desktop"),
+        "pictures": os.path.expanduser("~/Pictures"),
+        "picture": os.path.expanduser("~/Pictures"),
+        "photos": os.path.expanduser("~/Pictures"),
+        "music": os.path.expanduser("~/Music"),
+        "videos": os.path.expanduser("~/Videos"),
+        "video": os.path.expanduser("~/Videos"),
+        "home": os.path.expanduser("~"),
+        "projects": os.path.expanduser("~/projects"),
+    }
+
+    resolved_path = common_map.get(clean)
+    if not resolved_path:
+        if os.path.isabs(folder_target) and os.path.isdir(folder_target):
+            resolved_path = folder_target
+        else:
+            from actions.resolver import get_directory_resolver
+            resolved_path, candidates = get_directory_resolver().resolve_project_directory(clean)
+
+    if not resolved_path or not os.path.isdir(resolved_path):
+        msg = f"Folder '{folder_target}' could not be located on this system."
+        print(f"[JARVIS Error] {msg}")
+        return False, msg
+
+    opener = _OPENER_BIN or shutil.which("xdg-open") or "xdg-open"
+    folder_name = os.path.basename(resolved_path) or resolved_path
+    try:
+        print(f"[JARVIS] Opening {folder_name} folder ({resolved_path})...")
+        subprocess.Popen([opener, resolved_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        msg = f"Opening {folder_name} folder, Sir."
+        print(f"[JARVIS] {msg}")
+        return True, msg
+    except Exception as e:
+        msg = f"Failed to open folder: {e}"
+        print(f"[JARVIS Error] {msg}")
+        return False, msg
+
+
 def open_downloads():
     """Opens the user's Downloads folder using xdg-open."""
-    downloads_path = os.path.expanduser("~/Downloads")
-    print(f"[JARVIS] Opening Downloads folder ({downloads_path})...")
-    subprocess.Popen(["xdg-open", downloads_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    open_folder("downloads")
 
 
 def open_youtube():

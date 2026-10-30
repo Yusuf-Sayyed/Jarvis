@@ -108,19 +108,27 @@ def get_system_prompt_with_memory(additional_context: Optional[list[str]] = None
     return system
 
 
-def ask_ollama(prompt: str, print_output: bool = True, additional_context: Optional[list[str]] = None) -> str | None:
+def ask_ollama(
+    prompt: str,
+    print_output: bool = True,
+    additional_context: Optional[list[str]] = None,
+    on_sentence: Optional[Any] = None,
+) -> str | None:
     """
     Queries the local Ollama instance with the JARVIS system prompt and user memory.
-    Returns the response string if successful, else None.
+    If on_sentence is provided, streams tokens and yields complete sentences incrementally
+    to minimize first-audio latency.
+    Returns the complete response string if successful, else None.
     """
     print("\n[Intent: OLLAMA_QUERY]")
     print("[JARVIS] Consulting local intelligence...")
 
+    use_stream = on_sentence is not None
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "system": get_system_prompt_with_memory(additional_context=additional_context),
-        "stream": False,
+        "stream": use_stream,
     }
 
     req = urllib.request.Request(
@@ -130,14 +138,68 @@ def ask_ollama(prompt: str, print_output: bool = True, additional_context: Optio
         method="POST",
     )
 
+    t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             if response.status != 200:
                 print(f"[JARVIS Error] Ollama returned status code {response.status}.")
                 return None
 
-            response_data = json.loads(response.read().decode("utf-8"))
-            answer = response_data.get("response", "").strip()
+            if use_stream:
+                import re
+                full_parts = []
+                buffer = ""
+                is_gap = False
+                first_sent_checked = False
+
+                for line in response:
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+
+                    tok = chunk.get("response", "")
+                    if tok:
+                        full_parts.append(tok)
+                        buffer += tok
+
+                        # Check for sentence completion
+                        splits = re.split(r"(?<=[.!?])\s+", buffer)
+                        if len(splits) > 1:
+                            for completed_sent in splits[:-1]:
+                                s = completed_sent.strip()
+                                if s:
+                                    if not first_sent_checked:
+                                        first_sent_checked = True
+                                        if is_knowledge_gap(s):
+                                            is_gap = True
+                                    if not is_gap and on_sentence is not None:
+                                        try:
+                                            on_sentence(s)
+                                        except Exception:
+                                            pass
+                            buffer = splits[-1]
+
+                    if chunk.get("done", False):
+                        break
+
+                if buffer.strip() and not is_gap and on_sentence is not None:
+                    try:
+                        on_sentence(buffer.strip())
+                    except Exception:
+                        pass
+
+                answer = "".join(full_parts).strip()
+            else:
+                response_data = json.loads(response.read().decode("utf-8"))
+                answer = response_data.get("response", "").strip()
+
+            elapsed = time.perf_counter() - t0
+            from core.diagnostics import log_timing
+            log_timing("Ollama inference", elapsed, f"streaming={use_stream}, chars={len(answer or '')}")
+
             if answer:
                 if print_output:
                     print(f"\n[JARVIS]: \"{answer}\"\n")

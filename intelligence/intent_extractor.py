@@ -1025,6 +1025,27 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
 
     action_clues = ("open ", "launch ", "start ", "edit ", "develop ", "work on ")
     if any(clean_text.lower().startswith(clue) for clue in action_clues) or " in " in clean_text.lower():
+        # Deterministic fast-path before querying Ollama
+        from actions.resolver import get_app_registry, get_directory_resolver
+        target_raw = re.sub(r"^(?:open|launch|start|edit|develop|work on)\s+(?:on\s+|my\s+|the\s+)?", "", clean_text, flags=re.IGNORECASE).strip()
+        target_clean = re.sub(r"(?:\s+(?:project|folder|directory|repo))+$", "", target_raw, flags=re.IGNORECASE).strip()
+        if target_clean and not any(k in target_clean for k in ("there", "here", "workflow", "tab", "window")):
+            proj_path, _ = get_directory_resolver().resolve_project_directory(target_clean)
+            if proj_path:
+                return {
+                    "action": "open_project",
+                    "params": {"project": target_clean, "app": None},
+                    "from_cache": True,
+                }
+            app_match = get_app_registry().resolve_application(target_clean)
+            if app_match:
+                return {
+                    "action": "launch_app",
+                    "params": {"app": app_match.name, "project": None},
+                    "from_cache": True,
+                }
+
+        # Fallback to Ollama structured extraction only for unfamiliar non-deterministic phrasing
         extracted = query_ollama_structured_extraction(clean_text)
         if extracted and extracted.get("action") in ("open_project", "launch_app"):
             target_proj = extracted.get("target")

@@ -249,6 +249,10 @@ class SpeechRecognizer:
         frames_to_transcribe = self.speech_frames
         self.speech_frames = []
 
+        capture_duration = max(0.0, now - self.speech_start_time)
+        from core.diagnostics import log_timing
+        log_timing("Speech capture", capture_duration, f"chunks={len(frames_to_transcribe)}")
+
         if len(frames_to_transcribe) < MIN_UTTERANCE_CHUNKS:
             # Discard short transient clicks or coughs
             return None
@@ -257,6 +261,7 @@ class SpeechRecognizer:
         audio_float = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
         try:
+            t0 = time.perf_counter()
             segments, _ = self.whisper_model.transcribe(
                 audio_float,
                 language="en",
@@ -266,6 +271,7 @@ class SpeechRecognizer:
                 condition_on_previous_text=False,
             )
             text = "".join(s.text for s in segments).strip()
+            log_timing("Whisper transcription", time.perf_counter() - t0, f"text='{text}'")
             return text if text else None
         except Exception as e:
             print(f"\n[Warning] Whisper transcription error: {e}")

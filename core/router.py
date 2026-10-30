@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import time
 from actions import audio, browser, desktop, display, keyboard, media
 from actions.resolver import get_app_registry, get_directory_resolver
 from actions.workflow import get_workflow_executor
@@ -126,7 +127,11 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
     """
     context = get_conversation_context()
     from interfaces.speech import speak
+    from core.diagnostics import log_timing
+
+    t0_intent = time.perf_counter()
     intent, params = detect_intent(text, pending_action)
+    log_timing("Intent resolution", time.perf_counter() - t0_intent, f"intent={intent}")
 
     # 1. Confirmation Responses (Yes / No)
     if intent == "CONFIRM_ACTION":
@@ -915,7 +920,8 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
     # 2. Exit Command
     if intent == "EXIT":
         print("[Intent: EXIT]")
-        print("[JARVIS] Goodbye, Sir. Systems powering down.")
+        from core.shutdown import speak_goodbye
+        speak_goodbye()
         return False, None
 
     # 3. Actions Requiring Confirmation (e.g. Close Tab)
@@ -1086,7 +1092,18 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 fn()
             except Exception as e:
                 print(f"[JARVIS Error] Failed to execute action '{action}': {e}")
+        elif action == "open_folder":
+            t0_act = time.perf_counter()
+            folder_target = params.get("path") or params.get("folder", "")
+            desktop.open_folder(folder_target)
+            log_timing("Action execution", time.perf_counter() - t0_act, f"open_folder='{folder_target}'")
+        elif action == "open_folder_not_found":
+            folder_name = params.get("folder", "")
+            msg = f"I could not locate the folder '{folder_name}' on your system, Sir."
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
         elif action == "launch_app":
+            t0_act = time.perf_counter()
             exec_path = params.get("exec_path")
             app_name = params.get("app", "Application")
             if exec_path:
@@ -1094,6 +1111,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                     print(f"[JARVIS] Opening {app_name}...")
                     subprocess.Popen([exec_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     print(f"[JARVIS] {app_name} launched successfully.")
+                    log_timing("Action execution", time.perf_counter() - t0_act, f"launch_app='{app_name}'")
                 except Exception as e:
                     print(f"[JARVIS Error] Failed to launch {app_name}: {e}")
             else:
@@ -1317,7 +1335,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         prompt = params.get("prompt", text)
         extract_and_store_user_facts(prompt or text)
         from intelligence.ollama_client import is_knowledge_gap
-        from interfaces.speech import speak
+        from interfaces.speech import clean_text_for_speech, speak, wait_for_speech_completion
 
         # Enforce summary by default, full detail only when explicitly requested
         is_detail_requested = any(phrase in (prompt or text).lower() for phrase in (
@@ -1329,10 +1347,26 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         else:
             detail_guidance = ["Summary mode: Spoken voice interface. Keep your answer small and like a brief summary (strictly 1 to 2 short sentences)."]
 
-        answer = ask_ollama(prompt, print_output=False, additional_context=detail_guidance)
+        streamed_sentences = []
+
+        def handle_streamed_sentence(sentence: str):
+            clean = clean_text_for_speech(sentence)
+            if clean:
+                streamed_sentences.append(clean)
+                speak(clean, block=False)
+
+        answer = ask_ollama(
+            prompt,
+            print_output=False,
+            additional_context=detail_guidance,
+            on_sentence=handle_streamed_sentence,
+        )
         if answer and not is_knowledge_gap(answer):
             print(f"\n[JARVIS]: \"{answer}\"\n")
-            speak(answer)
+            if not streamed_sentences:
+                speak(answer)
+            else:
+                wait_for_speech_completion()
             context.add_dialogue_turn(prompt, answer)
             return True, None
 
