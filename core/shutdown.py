@@ -144,6 +144,7 @@ def perform_clean_shutdown(
     exit_code: int = 0,
     speak_farewell: bool = True,
     timeout_seconds: float = 6.0,
+    reason: str = "normal",
 ):
     """
     Orchestrates the complete, clean, idempotent shutdown sequence for JARVIS:
@@ -158,6 +159,17 @@ def perform_clean_shutdown(
         if _SHUTDOWN_COMPLETED:
             return
         _SHUTDOWN_COMPLETED = True
+
+    try:
+        from core.diagnostics import logger
+        logger.debug(
+            "[Lifecycle] Clean shutdown sequence initiated. Reason: '%s' (exit_code=%d, farewell=%s).",
+            reason,
+            exit_code,
+            speak_farewell,
+        )
+    except Exception:
+        pass
 
     # Use explicitly passed objects or fall back to registered handles
     target_stream = stream or _REGISTERED_STREAM

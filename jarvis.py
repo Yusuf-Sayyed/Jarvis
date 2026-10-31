@@ -6,16 +6,19 @@ Main entry point coordinating listener, session state, and command routing.
 import fcntl
 import json
 import os
+import signal
 import sys
 import time
 from actions.audio import get_volume_status
 from core.config import EXIT_COMMANDS
-from core.intent import normalize_spoken_text
+from core.diagnostics import configure_diagnostics_logging, logger
+from core.intent import is_exit_command, normalize_spoken_text
 from core.listener import (
     CHUNK_SIZE,
     check_microphone_status,
     init_audio_stream,
     init_speech_engine,
+    recover_audio_stream,
 )
 from core.clap_detector import ClapDetector
 from core.router import route_command
@@ -161,6 +164,24 @@ def main():
         sys.exit(0)
 
     register_lock_release_callback(release_instance_lock)
+    configure_diagnostics_logging()
+    logger.debug("[Lifecycle] JARVIS starting up (PID=%d)...", os.getpid())
+
+    def _handle_termination_signal(signum, frame):
+        sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+        logger.debug("[Lifecycle] Termination signal received (%s). Shutting down cleanly.", sig_name)
+        perform_clean_shutdown(
+            stream if "stream" in locals() else None,
+            audio_mgr if "audio_mgr" in locals() else None,
+            speech_engine if "speech_engine" in locals() else None,
+            speak_farewell=False,
+            reason=f"signal_{sig_name}",
+        )
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_termination_signal)
+    except Exception:
+        pass
 
     if "--test-greeting" in sys.argv:
         print("[JARVIS] Testing startup greeting...")
@@ -191,6 +212,7 @@ def main():
     register_audio_context(stream=stream, audio_mgr=audio_mgr, speech_engine=speech_engine)
 
     print_standby_status()
+    logger.debug("[Lifecycle] Entering STANDBY mode. Waiting for wake word or double clap.")
 
     # 4. Perform startup greeting (spoken once per desktop login session)
     perform_startup_greeting(stream, speech_engine)
@@ -203,6 +225,10 @@ def main():
         while True:
             # Check 5-minute inactivity timeout
             if session.is_active and session.is_expired():
+                logger.debug(
+                    "[Lifecycle] Active session timed out after %ds of inactivity. Transitioning to STANDBY.",
+                    session.timeout_seconds,
+                )
                 session.deactivate()
                 clap_detector.reset()
                 print("\033[2K\r", end="", flush=True)
@@ -214,24 +240,65 @@ def main():
             from interfaces.speech import should_mute_mic
             if should_mute_mic():
                 try:
-                    stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                    if stream is not None and stream.is_active():
+                        stream.read(CHUNK_SIZE, exception_on_overflow=False)
                 except Exception:
                     pass
                 speech_engine.reset_buffers()
                 continue
 
+            # Safe audio reading with automated stream recovery
+            data = None
             try:
-                data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            except (IOError, OSError):
-                continue
+                if stream is not None and hasattr(stream, "is_active") and stream.is_active():
+                    data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                else:
+                    raise OSError("Microphone stream is inactive or unavailable")
+            except (IOError, OSError) as e:
+                logger.debug("[Audio] Microphone read error: %s. Attempting stream recovery...", e)
+                print(f"\n[JARVIS Warning] Microphone stream interrupted ({e}). Attempting recovery...")
+                new_audio_mgr, new_stream = recover_audio_stream(
+                    old_audio_mgr=audio_mgr, old_stream=stream, max_retries=3, retry_delay=0.5
+                )
+                if new_stream is not None and new_audio_mgr is not None:
+                    audio_mgr = new_audio_mgr
+                    stream = new_stream
+                    register_audio_context(stream=stream, audio_mgr=audio_mgr, speech_engine=speech_engine)
+                    logger.debug("[Audio] Microphone stream recovered successfully.")
+                    print("[JARVIS] Microphone stream reconnected.")
+                    continue
+                else:
+                    logger.debug("[Audio] Stream recovery failed. Retrying in next cycle...")
+                    time.sleep(1.0)
+                    continue
+            except Exception as e:
+                logger.debug("[Audio] Unexpected audio error: %s. Attempting stream recovery...", e)
+                print(f"\n[JARVIS Warning] Audio stream error ({e}). Attempting recovery...")
+                new_audio_mgr, new_stream = recover_audio_stream(
+                    old_audio_mgr=audio_mgr, old_stream=stream, max_retries=3, retry_delay=0.5
+                )
+                if new_stream is not None and new_audio_mgr is not None:
+                    audio_mgr = new_audio_mgr
+                    stream = new_stream
+                    register_audio_context(stream=stream, audio_mgr=audio_mgr, speech_engine=speech_engine)
+                    logger.debug("[Audio] Microphone stream recovered successfully.")
+                    print("[JARVIS] Microphone stream reconnected.")
+                    continue
+                else:
+                    time.sleep(1.0)
+                    continue
 
-            if len(data) == 0:
+            if data is None or len(data) == 0:
                 continue
 
             # In STANDBY mode, check for hands-free two-clap wake trigger
             if not session.is_active:
                 if clap_detector.process_chunk(data):
                     session.activate()
+                    logger.debug(
+                        "[Lifecycle] Entering ACTIVE session via two-clap trigger (timeout=%ds).",
+                        session.timeout_seconds,
+                    )
                     greeting = get_activation_greeting()
                     session.mark_greeted()
                     print("\033[2K\r", end="", flush=True)
@@ -249,19 +316,30 @@ def main():
                     continue
 
             rem_str = format_time_remaining(session.remaining_seconds()) if session.is_active else ""
-            spoken_text = speech_engine.process_audio(
-                data, session_active=session.is_active, time_remaining_str=rem_str
-            )
+            try:
+                spoken_text = speech_engine.process_audio(
+                    data, session_active=session.is_active, time_remaining_str=rem_str
+                )
+            except Exception as e:
+                logger.debug("[STT] Error processing audio frame: %s. Continuing listening loop.", e)
+                speech_engine.reset_buffers()
+                spoken_text = None
 
             if spoken_text:
                 print("\033[2K\r", end="", flush=True)
 
-                # Global exit commands
-                clean = normalize_spoken_text(spoken_text)
-                if any(clean == cmd or clean.startswith(cmd) or clean.endswith(cmd) for cmd in EXIT_COMMANDS):
+                # Global explicit exit commands (e.g. "bye", "goodbye", "quit jarvis", "exit")
+                if is_exit_command(spoken_text):
+                    logger.debug("[Lifecycle] Explicit exit phrase received ('%s'). Performing clean shutdown.", spoken_text)
                     print(f"\n[Heard] \"{spoken_text}\"")
                     print("[Intent: EXIT]")
-                    perform_clean_shutdown(stream, audio_mgr, speech_engine, speak_farewell=True)
+                    perform_clean_shutdown(
+                        stream,
+                        audio_mgr,
+                        speech_engine,
+                        speak_farewell=True,
+                        reason=f"explicit_exit: {spoken_text}",
+                    )
                     break
 
                 has_wake, remaining_command = extract_wake_command(spoken_text)
@@ -270,6 +348,10 @@ def main():
                     # --- STANDBY MODE ---
                     if has_wake:
                         session.activate()
+                        logger.debug(
+                            "[Lifecycle] Entering ACTIVE session via wake-word trigger (timeout=%ds).",
+                            session.timeout_seconds,
+                        )
                         if remaining_command:
                             session.mark_greeted()
                             print("\n" + "=" * 60)
@@ -277,13 +359,30 @@ def main():
                             print("         Listening for commands or questions without the wake word.")
                             print("=" * 60)
                             print(f"\n[Heard] \"{remaining_command}\"")
-                            should_continue, session.pending_action = route_command(
-                                remaining_command, session.pending_action
-                            )
+                            try:
+                                should_continue, session.pending_action = route_command(
+                                    remaining_command, session.pending_action
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "[Router] Error executing inline command '%s': %s",
+                                    remaining_command,
+                                    e,
+                                    exc_info=True,
+                                )
+                                print(f"\n[JARVIS Error] An error occurred while processing your request: {e}\n")
+                                should_continue = True
+
                             drain_audio_stream(stream)
                             speech_engine.reset_buffers()
                             if not should_continue:
-                                perform_clean_shutdown(stream, audio_mgr, speech_engine, speak_farewell=True)
+                                perform_clean_shutdown(
+                                    stream,
+                                    audio_mgr,
+                                    speech_engine,
+                                    speak_farewell=True,
+                                    reason="command_exit",
+                                )
                                 break
                             session.reset_timer()
                             remaining_str = format_time_remaining(session.remaining_seconds())
@@ -304,6 +403,7 @@ def main():
                             print(f"[ACTIVE | {remaining_str} remaining]")
                             print("-" * 60)
                     else:
+                        logger.debug("[Lifecycle] Utterance ignored in STANDBY (no wake word): '%s'", spoken_text)
                         print(f"[STANDBY] Heard \"{spoken_text}\" (Standing by. Say 'Hey JARVIS' or clap twice to wake me).")
 
                 else:
@@ -317,13 +417,30 @@ def main():
                         continue
 
                     print(f"\n[Heard] \"{cmd_to_run}\"")
-                    should_continue, session.pending_action = route_command(
-                        cmd_to_run, session.pending_action
-                    )
+                    try:
+                        should_continue, session.pending_action = route_command(
+                            cmd_to_run, session.pending_action
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "[Router] Error executing command '%s': %s",
+                            cmd_to_run,
+                            e,
+                            exc_info=True,
+                        )
+                        print(f"\n[JARVIS Error] An error occurred while processing your request: {e}\n")
+                        should_continue = True
+
                     drain_audio_stream(stream)
                     speech_engine.reset_buffers()
                     if not should_continue:
-                        perform_clean_shutdown(stream, audio_mgr, speech_engine, speak_farewell=True)
+                        perform_clean_shutdown(
+                            stream,
+                            audio_mgr,
+                            speech_engine,
+                            speak_farewell=True,
+                            reason="command_exit",
+                        )
                         break
                     session.reset_timer()
                     remaining_str = format_time_remaining(session.remaining_seconds())
@@ -331,12 +448,25 @@ def main():
                     print("-" * 60)
 
     except KeyboardInterrupt:
+        logger.debug("[Lifecycle] Listening loop stopped by user (KeyboardInterrupt / Ctrl+C).")
         print("\n[JARVIS] Stopped by user (Ctrl+C). Goodbye, Sir!")
         perform_clean_shutdown(
             stream if "stream" in locals() else None,
             audio_mgr if "audio_mgr" in locals() else None,
             speech_engine if "speech_engine" in locals() else None,
             speak_farewell=False,
+            reason="keyboard_interrupt",
+        )
+    except Exception as e:
+        logger.debug("[Lifecycle] Listening loop stopped by unhandled exception: %s", e, exc_info=True)
+        print(f"\n[JARVIS Error] Listening loop encountered an unexpected error: {e}")
+        perform_clean_shutdown(
+            stream if "stream" in locals() else None,
+            audio_mgr if "audio_mgr" in locals() else None,
+            speech_engine if "speech_engine" in locals() else None,
+            exit_code=1,
+            speak_farewell=False,
+            reason=f"unhandled_exception: {e}",
         )
     finally:
         perform_clean_shutdown(
@@ -344,6 +474,7 @@ def main():
             audio_mgr if "audio_mgr" in locals() else None,
             speech_engine if "speech_engine" in locals() else None,
             speak_farewell=False,
+            reason="finally_block",
         )
 
 

@@ -9,10 +9,13 @@ JARVIS_DEBUG is enabled; normal operating logs remain concise.
 """
 
 import contextlib
+import logging
 import os
 import threading
 import time
 from typing import Any, Optional
+
+logger = logging.getLogger("jarvis")
 
 
 def is_debug_mode() -> bool:
@@ -22,6 +25,18 @@ def is_debug_mode() -> bool:
     tts_diag = getattr(config, "TTS_DIAGNOSTICS", False)
     env_debug = os.environ.get("JARVIS_DEBUG", "").lower() in ("1", "true", "yes")
     return log_level == "DEBUG" or tts_diag or env_debug
+
+
+def configure_diagnostics_logging():
+    """Configures the jarvis logger based on LOG_LEVEL and JARVIS_DEBUG settings."""
+    level = logging.DEBUG if is_debug_mode() else logging.INFO
+    logger.setLevel(level)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        formatter = logging.Formatter("[JARVIS %(levelname)s] %(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
 
 
 def log_timing(stage: str, duration: float, details: str = ""):

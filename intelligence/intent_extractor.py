@@ -6,6 +6,7 @@ reusable multi-step workflows, and structured local Ollama JSON fallback.
 """
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request

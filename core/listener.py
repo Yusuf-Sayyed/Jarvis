@@ -12,6 +12,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -195,9 +196,16 @@ class SpeechRecognizer:
     ) -> str | None:
         # Detect voice activity via neural Silero VAD (or energy fallback)
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        is_speech = False
         if self.vad_model is not None and len(samples) % 512 == 0:
-            vad_out = self.vad_model(samples)
-            is_speech = float(np.max(vad_out)) >= VAD_SPEECH_THRESHOLD
+            try:
+                vad_out = self.vad_model(samples)
+                is_speech = float(np.max(vad_out)) >= VAD_SPEECH_THRESHOLD
+            except Exception as e:
+                from core.diagnostics import logger
+                logger.debug("[STT] Silero VAD evaluation error: %s. Using energy fallback.", e)
+                rms = float(np.sqrt(np.mean(np.square(samples * 32768.0))))
+                is_speech = rms >= 2500
         else:
             rms = float(np.sqrt(np.mean(np.square(samples * 32768.0))))
             is_speech = rms >= 2500
@@ -274,6 +282,8 @@ class SpeechRecognizer:
             log_timing("Whisper transcription", time.perf_counter() - t0, f"text='{text}'")
             return text if text else None
         except Exception as e:
+            from core.diagnostics import logger
+            logger.debug("[STT] Whisper transcription error encountered: %s", e)
             print(f"\n[Warning] Whisper transcription error: {e}")
             return None
 
@@ -308,13 +318,17 @@ def init_speech_model() -> tuple[SpeechRecognizer, SpeechRecognizer]:
     return engine, engine
 
 
-def init_audio_stream() -> tuple[pyaudio.PyAudio, pyaudio.Stream]:
+def init_audio_stream(fatal: bool = True) -> tuple[Optional[pyaudio.PyAudio], Optional[pyaudio.Stream]]:
     """Initializes PyAudio and opens the microphone audio stream."""
     try:
         p = pyaudio.PyAudio()
     except Exception as e:
+        from core.diagnostics import logger
+        logger.debug("[Audio] Could not initialize PyAudio: %s", e)
         print(f"[Error] Could not initialize PyAudio: {e}")
-        sys.exit(1)
+        if fatal:
+            sys.exit(1)
+        return None, None
 
     try:
         default_dev = p.get_default_input_device_info()
@@ -332,10 +346,61 @@ def init_audio_stream() -> tuple[pyaudio.PyAudio, pyaudio.Stream]:
         )
         stream.start_stream()
     except Exception as e:
+        from core.diagnostics import logger
+        logger.debug("[Audio] Could not open microphone stream: %s", e)
         print(f"\n[Error] Could not open microphone stream: {e}")
         print("Please verify your microphone is connected and accessible.")
-        p.terminate()
-        sys.exit(1)
+        try:
+            p.terminate()
+        except Exception:
+            pass
+        if fatal:
+            sys.exit(1)
+        return None, None
 
     return p, stream
+
+
+def recover_audio_stream(
+    old_audio_mgr: Optional[pyaudio.PyAudio] = None,
+    old_stream: Optional[pyaudio.Stream] = None,
+    max_retries: int = 3,
+    retry_delay: float = 0.5,
+) -> tuple[Optional[pyaudio.PyAudio], Optional[pyaudio.Stream]]:
+    """
+    Safely tears down interrupted or failed audio stream resources and attempts
+    to re-open a fresh PyAudio microphone stream without killing the application.
+    """
+    from core.diagnostics import logger
+    logger.debug("[Audio] Audio stream recovery initiated (max_retries=%d)...", max_retries)
+
+    if old_stream is not None:
+        try:
+            if hasattr(old_stream, "stop_stream") and old_stream.is_active():
+                old_stream.stop_stream()
+        except Exception:
+            pass
+        try:
+            if hasattr(old_stream, "close"):
+                old_stream.close()
+        except Exception:
+            pass
+
+    if old_audio_mgr is not None:
+        try:
+            if hasattr(old_audio_mgr, "terminate"):
+                old_audio_mgr.terminate()
+        except Exception:
+            pass
+
+    for attempt in range(1, max_retries + 1):
+        time.sleep(retry_delay)
+        p, stream = init_audio_stream(fatal=False)
+        if p is not None and stream is not None:
+            logger.debug("[Audio] Microphone stream recovered successfully on attempt %d.", attempt)
+            return p, stream
+        logger.debug("[Audio] Stream recovery attempt %d/%d failed.", attempt, max_retries)
+
+    logger.debug("[Audio] All %d stream recovery attempts failed.", max_retries)
+    return None, None
 

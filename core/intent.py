@@ -366,6 +366,62 @@ def normalize_spoken_text(text: str) -> str:
     return result
 
 
+def is_exit_command(text: str) -> bool:
+    """
+    Determines if spoken text represents an explicit, intentional exit instruction.
+    Prevents ordinary conversation, embedded words, or background noise from accidentally
+    shutting down JARVIS.
+    """
+    if not text:
+        return False
+
+    raw = text.strip().lower().rstrip(".?!, ").strip()
+    if not raw:
+        return False
+
+    if raw in EXIT_COMMANDS:
+        return True
+
+    clean = normalize_spoken_text(text).strip().lower().rstrip(".?!, ").strip()
+    if clean in EXIT_COMMANDS:
+        return True
+
+    # Strip optional wake words / conversational prefixes
+    prefixes = (
+        "hey jarvis", "ok jarvis", "okay jarvis", "hello jarvis", "hi jarvis",
+        "wake up jarvis", "jarvis", "alright", "okay", "ok", "thanks", "thank you",
+    )
+    core = clean
+    for p in sorted(prefixes, key=len, reverse=True):
+        if core.startswith(p):
+            remainder = core[len(p):].strip().lstrip(",:;. ")
+            if remainder:
+                core = remainder
+            break
+
+    # Strip optional polite / closing suffixes
+    suffixes = ("jarvis", "sir", "please", "now", "for now", "all", "everyone")
+    for s in sorted(suffixes, key=len, reverse=True):
+        if core.endswith(s):
+            remainder = core[:-len(s)].strip().rstrip(",:;. ")
+            if remainder:
+                core = remainder
+            break
+
+    if core in EXIT_COMMANDS:
+        return True
+
+    extended_exit_phrases = {
+        "alright bye", "bye for now", "okay bye", "ok bye",
+        "goodbye for now", "see you soon", "until next time",
+        "have a good day", "have a good night", "take care",
+    }
+    if raw in extended_exit_phrases or clean in extended_exit_phrases or core in extended_exit_phrases:
+        return True
+
+    return False
+
+
 def sanitize_search_query(query: str) -> str:
     """Cleans speech bleed and trailing instructions from search queries."""
     q = query.strip()
@@ -851,7 +907,7 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
             return "TUTORING_ANSWER", {"answer": orig_command, "question": q, "topic": top, "step": st}
 
     # 2. Exit commands
-    if any(clean_text == cmd or clean_text.startswith(cmd) or clean_text.endswith(cmd) for cmd in EXIT_COMMANDS):
+    if is_exit_command(text) or is_exit_command(clean_text):
         return "EXIT", {}
 
     # 2.5 Active Tutoring & Interactive Activity Context

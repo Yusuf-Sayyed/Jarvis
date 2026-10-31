@@ -1355,12 +1355,16 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 streamed_sentences.append(clean)
                 speak(clean, block=False)
 
-        answer = ask_ollama(
-            prompt,
-            print_output=False,
-            additional_context=detail_guidance,
-            on_sentence=handle_streamed_sentence,
-        )
+        try:
+            answer = ask_ollama(
+                prompt,
+                print_output=False,
+                additional_context=detail_guidance,
+                on_sentence=handle_streamed_sentence,
+            )
+        except Exception as e:
+            print(f"[JARVIS Error] Local intelligence query failed: {e}")
+            answer = None
         if answer and not is_knowledge_gap(answer):
             print(f"\n[JARVIS]: \"{answer}\"\n")
             if not streamed_sentences:

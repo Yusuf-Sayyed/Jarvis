@@ -3,7 +3,8 @@ Client for the local Ollama LLM service (llama3.2:3b).
 """
 
 import json
-from typing import Optional
+import time
+from typing import Any, Optional
 import urllib.error
 import urllib.request
 from core.config import JARVIS_SYSTEM_PROMPT, OLLAMA_API_URL, OLLAMA_MODEL
