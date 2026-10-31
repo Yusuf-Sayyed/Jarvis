@@ -213,6 +213,8 @@ def main():
 
     print_standby_status()
     logger.debug("[Lifecycle] Entering STANDBY mode. Waiting for wake word or double clap.")
+    from core.status import set_runtime_status
+    set_runtime_status("STANDBY")
 
     # 4. Perform startup greeting (spoken once per desktop login session)
     perform_startup_greeting(stream, speech_engine)
@@ -231,17 +233,30 @@ def main():
                 )
                 session.deactivate()
                 clap_detector.reset()
+                set_runtime_status("STANDBY")
                 print("\033[2K\r", end="", flush=True)
                 print("\n" + "=" * 60)
                 print("[STANDBY] 5-minute session expired due to inactivity.")
                 print("          Say 'Hey JARVIS' or clap twice to wake me.")
                 print("=" * 60 + "\n")
 
-            from interfaces.speech import should_mute_mic
+            from interfaces.speech import is_speaking, should_mute_mic, stop_speech
             if should_mute_mic():
                 try:
-                    if stream is not None and stream.is_active():
-                        stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                    if stream is not None and hasattr(stream, "is_active") and stream.is_active():
+                        data_chk = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                        if is_speaking() and speech_engine and hasattr(speech_engine, "detect_speech_onset") and speech_engine.detect_speech_onset(data_chk):
+                            logger.debug("[Audio] User speech detected during TTS playback. Safely interrupting speech.")
+                            stop_speech(for_interruption=True)
+                            drain_audio_stream(stream)
+                            speech_engine.reset_buffers()
+                            speech_engine.pre_buffer.append(data_chk)
+                            speech_engine.speech_active = True
+                            speech_engine.speech_start_time = time.time()
+                            speech_engine.speech_frames = [data_chk]
+                            tag = f"[ACTIVE | {session.remaining_seconds():.0f}s left]" if session.is_active else "[STANDBY]"
+                            print(f"\033[2K\r{tag} 🎤 (Interrupted) Listening...", end="", flush=True)
+                            continue
                 except Exception:
                     pass
                 speech_engine.reset_buffers()
@@ -295,6 +310,7 @@ def main():
             if not session.is_active:
                 if clap_detector.process_chunk(data):
                     session.activate()
+                    set_runtime_status("LISTENING")
                     logger.debug(
                         "[Lifecycle] Entering ACTIVE session via two-clap trigger (timeout=%ds).",
                         session.timeout_seconds,
@@ -310,6 +326,7 @@ def main():
                     drain_audio_stream(stream)
                     speech_engine.reset_buffers()
                     session.reset_timer()
+                    set_runtime_status("LISTENING")
                     remaining_str = format_time_remaining(session.remaining_seconds())
                     print(f"[ACTIVE | {remaining_str} remaining]")
                     print("-" * 60)
@@ -333,6 +350,7 @@ def main():
                     logger.debug("[Lifecycle] Explicit exit phrase received ('%s'). Performing clean shutdown.", spoken_text)
                     print(f"\n[Heard] \"{spoken_text}\"")
                     print("[Intent: EXIT]")
+                    set_runtime_status("STANDBY")
                     perform_clean_shutdown(
                         stream,
                         audio_mgr,
@@ -348,6 +366,7 @@ def main():
                     # --- STANDBY MODE ---
                     if has_wake:
                         session.activate()
+                        set_runtime_status("LISTENING")
                         logger.debug(
                             "[Lifecycle] Entering ACTIVE session via wake-word trigger (timeout=%ds).",
                             session.timeout_seconds,
@@ -359,11 +378,13 @@ def main():
                             print("         Listening for commands or questions without the wake word.")
                             print("=" * 60)
                             print(f"\n[Heard] \"{remaining_command}\"")
+                            set_runtime_status("THINKING")
                             try:
                                 should_continue, session.pending_action = route_command(
                                     remaining_command, session.pending_action
                                 )
                             except Exception as e:
+                                set_runtime_status("ERROR", details=str(e))
                                 logger.debug(
                                     "[Router] Error executing inline command '%s': %s",
                                     remaining_command,
@@ -375,6 +396,7 @@ def main():
 
                             drain_audio_stream(stream)
                             speech_engine.reset_buffers()
+                            set_runtime_status("LISTENING" if session.is_active else "STANDBY")
                             if not should_continue:
                                 perform_clean_shutdown(
                                     stream,
@@ -399,10 +421,12 @@ def main():
                             drain_audio_stream(stream)
                             speech_engine.reset_buffers()
                             session.reset_timer()
+                            set_runtime_status("LISTENING")
                             remaining_str = format_time_remaining(session.remaining_seconds())
                             print(f"[ACTIVE | {remaining_str} remaining]")
                             print("-" * 60)
                     else:
+                        set_runtime_status("STANDBY")
                         logger.debug("[Lifecycle] Utterance ignored in STANDBY (no wake word): '%s'", spoken_text)
                         print(f"[STANDBY] Heard \"{spoken_text}\" (Standing by. Say 'Hey JARVIS' or clap twice to wake me).")
 
@@ -412,16 +436,19 @@ def main():
 
                     if not cmd_to_run and has_wake:
                         session.reset_timer()
+                        set_runtime_status("LISTENING")
                         print(f"\n[ACTIVE] Timer reset. 5 minutes remaining, Sir.")
                         print("-" * 60)
                         continue
 
                     print(f"\n[Heard] \"{cmd_to_run}\"")
+                    set_runtime_status("THINKING")
                     try:
                         should_continue, session.pending_action = route_command(
                             cmd_to_run, session.pending_action
                         )
                     except Exception as e:
+                        set_runtime_status("ERROR", details=str(e))
                         logger.debug(
                             "[Router] Error executing command '%s': %s",
                             cmd_to_run,
@@ -433,6 +460,7 @@ def main():
 
                     drain_audio_stream(stream)
                     speech_engine.reset_buffers()
+                    set_runtime_status("LISTENING" if session.is_active else "STANDBY")
                     if not should_continue:
                         perform_clean_shutdown(
                             stream,

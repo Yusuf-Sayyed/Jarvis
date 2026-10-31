@@ -13,12 +13,14 @@ LAST_YOUTUBE_QUERY: str | None = None
 LAST_YOUTUBE_URL: str | None = None
 
 
-def get_first_youtube_video_url(query: str) -> str | None:
+def get_youtube_video_results(query: str, limit: int = 5) -> list[dict[str, str]]:
     """
-    Fetches the YouTube search results page for a query and extracts the top video URL.
+    Fetches the YouTube search results page for a query and extracts up to `limit` distinct video URLs.
     Returns:
-        The direct video watch URL (e.g. 'https://www.youtube.com/watch?v=...') or None.
+        List of dicts: [{"title": query, "url": "https://www.youtube.com/watch?v=...", "video_id": "..."}, ...]
     """
+    results: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
     try:
         encoded_query = urllib.parse.quote_plus(query)
         search_url = f"https://www.youtube.com/results?search_query={encoded_query}"
@@ -28,16 +30,37 @@ def get_first_youtube_video_url(query: str) -> str | None:
             html = response.read().decode("utf-8", errors="ignore")
             # Matches standard 11-character YouTube video IDs
             matches = re.findall(r"/watch\?v=([a-zA-Z0-9_-]{11})", html)
-            if matches:
-                return f"https://www.youtube.com/watch?v={matches[0]}"
+            for vid in matches:
+                if vid not in seen_ids:
+                    seen_ids.add(vid)
+                    results.append({
+                        "title": f"{query} (Result {len(results)+1})",
+                        "url": f"https://www.youtube.com/watch?v={vid}",
+                        "video_id": vid,
+                    })
+                    if len(results) >= limit:
+                        break
     except Exception as e:
-        print(f"[JARVIS Warning] Could not resolve direct YouTube video: {e}")
+        print(f"[JARVIS Warning] Could not resolve YouTube video results: {e}")
+    return results
+
+
+def get_first_youtube_video_url(query: str) -> str | None:
+    """
+    Fetches the YouTube search results page for a query and extracts the top video URL.
+    Returns:
+        The direct video watch URL (e.g. 'https://www.youtube.com/watch?v=...') or None.
+    """
+    results = get_youtube_video_results(query, limit=1)
+    if results:
+        return results[0]["url"]
     return None
 
 
-def play_youtube_video(query: str) -> dict[str, Any]:
+def play_youtube_video(query: str, result_index: int = 1) -> dict[str, Any]:
     """
-    Resolves the top video for a query and opens it directly in Firefox.
+    Resolves the requested video (default top video) for a query and opens it directly in Firefox.
+    Supports index-based selection (e.g. result_index=2 for 'play the second result').
     Attempts playback through safe media controls, verifies playback state,
     and falls back to search results if direct video resolution fails.
 
@@ -56,15 +79,30 @@ def play_youtube_video(query: str) -> dict[str, Any]:
     from core.context import get_conversation_context
     ctx = get_conversation_context()
 
-    print(f'[JARVIS] Locating best video match for "{query}" on YouTube...')
-    try:
-        video_url = get_first_youtube_video_url(query)
-    except Exception as e:
-        video_url = None
+    # 1. Check if the requested index already exists in recent search results context
+    video_url = None
+    existing_result = ctx.get_youtube_result_by_index(result_index)
+    if existing_result and (not query or query.strip() == ctx.last_youtube_query):
+        video_url = existing_result["url"]
+        query = existing_result.get("title", query or ctx.last_youtube_query or "selected video")
+
+    # 2. If not found in context, fetch fresh results from YouTube
+    if not video_url and query:
+        print(f'[JARVIS] Locating video results for "{query}" on YouTube (selection index={result_index})...')
+        try:
+            results = get_youtube_video_results(query, limit=max(5, result_index))
+            if results:
+                ctx.set_youtube_results(query=query, results=results, stage="search_page_opened")
+                idx = max(0, min(result_index - 1, len(results) - 1))
+                video_url = results[idx]["url"]
+        except Exception as e:
+            print(f"[JARVIS Warning] Error fetching YouTube results: {e}")
+            video_url = None
 
     if video_url:
         LAST_YOUTUBE_URL = video_url
         ctx.set_pending_youtube(query=query, url=video_url, action="play")
+        ctx.set_media_state("video_opened", query=query, url=video_url)
         print(f"[JARVIS] Opening and playing video: {video_url}")
         try:
             subprocess.Popen(["firefox", "--new-tab", video_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -94,12 +132,22 @@ def play_youtube_video(query: str) -> dict[str, Any]:
         except Exception:
             pass
 
+        ctx.set_media_state(stage, query=query, url=video_url)
+
+        ordinal_str = ""
+        if result_index == 2:
+            ordinal_str = "the second result, "
+        elif result_index == 3:
+            ordinal_str = "the third result, "
+        elif result_index > 3:
+            ordinal_str = f"result number {result_index}, "
+
         if stage == "playback_confirmed":
-            msg = f"Playing '{query}' on YouTube, Sir."
+            msg = f"Playing {ordinal_str}'{query}' on YouTube, Sir."
         elif stage == "play_command_sent":
-            msg = f"Opened '{query}' on YouTube and initiated playback, Sir."
+            msg = f"Opened {ordinal_str}'{query}' on YouTube and initiated playback, Sir."
         else:
-            msg = f"Opened '{query}' on YouTube, Sir. If blocked by browser autoplay, click the video to play."
+            msg = f"Opened {ordinal_str}'{query}' on YouTube, Sir. If blocked by browser autoplay, click the video to play."
 
         return {
             "success": True,
@@ -107,7 +155,7 @@ def play_youtube_video(query: str) -> dict[str, Any]:
             "url": video_url,
             "query": query,
             "message": msg,
-            "details": {"autoplay_warning": autoplay_warning},
+            "details": {"autoplay_warning": autoplay_warning, "result_index": result_index},
         }
     else:
         # Fallback to search results page
@@ -115,6 +163,7 @@ def play_youtube_video(query: str) -> dict[str, Any]:
         search_url = f"https://www.youtube.com/results?search_query={encoded_query}"
         LAST_YOUTUBE_URL = search_url
         ctx.set_pending_youtube(query=query, url=search_url, action="search")
+        ctx.set_media_state("search_page_opened", query=query, url=search_url)
         print(f'[JARVIS] Could not auto-select video. Opening search results for "{query}"...')
         try:
             subprocess.Popen(["firefox", "--new-tab", search_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -138,19 +187,26 @@ def play_youtube_video(query: str) -> dict[str, Any]:
         }
 
 
-def open_first_youtube_result() -> dict[str, Any]:
+def open_youtube_result(result_index: int = 1) -> dict[str, Any]:
     """
-    Opens the top video for the most recent YouTube search,
-    supporting commands like 'open the first YouTube result'.
+    Opens a specific result by index (1-based) from the previous YouTube search,
+    supporting commands like 'play the second result', 'play the third video', etc.
     """
     global LAST_YOUTUBE_QUERY
     from core.context import get_conversation_context
     ctx = get_conversation_context()
 
+    # Check cached results first
+    result_item = ctx.get_youtube_result_by_index(result_index)
+    if result_item:
+        query = ctx.last_youtube_query or result_item.get("title", f"Result {result_index}")
+        print(f'[JARVIS] Opening result #{result_index} for search: "{query}"...')
+        return play_youtube_video(query, result_index=result_index)
+
     query = LAST_YOUTUBE_QUERY or ctx.get_recent_youtube_query()
     if query:
-        print(f'[JARVIS] Opening the first result for previous search: "{query}"...')
-        return play_youtube_video(query)
+        print(f'[JARVIS] Resolving result #{result_index} for previous search: "{query}"...')
+        return play_youtube_video(query, result_index=result_index)
     else:
         msg = "No recent YouTube search found, Sir. What would you like to search for?"
         print(f"[JARVIS] {msg}")
@@ -164,6 +220,14 @@ def open_first_youtube_result() -> dict[str, Any]:
         }
 
 
+def open_first_youtube_result() -> dict[str, Any]:
+    """
+    Opens the top video for the most recent YouTube search,
+    supporting commands like 'open the first YouTube result'.
+    """
+    return open_youtube_result(result_index=1)
+
+
 def search_web(query: str, engine: str = "google") -> dict[str, Any]:
     """URL-encodes query and opens search results in a new Firefox tab."""
     encoded_query = urllib.parse.quote_plus(query)
@@ -175,6 +239,11 @@ def search_web(query: str, engine: str = "google") -> dict[str, Any]:
         url = f"https://www.youtube.com/results?search_query={encoded_query}"
         LAST_YOUTUBE_URL = url
         ctx.set_pending_youtube(query=query, url=url, action="search")
+        try:
+            results = get_youtube_video_results(query, limit=5)
+            ctx.set_youtube_results(query=query, results=results, stage="search_page_opened")
+        except Exception:
+            ctx.set_media_state("search_page_opened", query=query, url=url)
         engine_name = "YouTube"
     else:
         url = f"https://www.google.com/search?q={encoded_query}"

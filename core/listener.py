@@ -157,6 +157,25 @@ class SpeechRecognizer:
             print(f"[Error] Failed to load Vosk model: {e}")
             sys.exit(1)
 
+    def detect_speech_onset(self, data: bytes, threshold: float = 0.65) -> bool:
+        """
+        Determines if incoming audio contains significant human speech activity.
+        Used for barge-in / safe speech interruption during TTS playback.
+        """
+        if not data:
+            return False
+        try:
+            samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+            if self.vad_model is not None and len(samples) % 512 == 0:
+                vad_out = self.vad_model(samples)
+                prob = float(np.max(vad_out))
+                return prob >= threshold
+            else:
+                rms = float(np.sqrt(np.mean(np.square(samples * 32768.0))))
+                return rms >= 3000.0
+        except Exception:
+            return False
+
     def reset_buffers(self):
         """Clears speech audio buffers and pre-speech ring buffer."""
         self.speech_frames.clear()

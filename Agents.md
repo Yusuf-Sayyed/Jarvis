@@ -1,213 +1,119 @@
-# JARVIS: On-Demand Launch, Complete Shutdown, Desktop Control & YouTube Playback
+# JARVIS Upgrade: Context, Natural Conversation, Fast Speech & Minimal KDE Widget
 
-You are working on my existing local JARVIS AI voice assistant project at `~/jarvis` on Fedora Linux with KDE Plasma, running on Wayland.
+Inspect my existing `~/jarvis` project on Fedora KDE Wayland before making changes. Extend the current architecture; do not rebuild it or remove existing features.
 
-Your task is to inspect the existing project and implement the improvements below while preserving all working features. **Do not rebuild the project from scratch.** First inspect the code, entry point, virtual environments, dependencies, current architecture, action handlers, workflows, memory system, speech pipeline, and tests. Identify the actual implementation before making changes.
+## 1. Context-aware conversations
 
-## 1. Launch JARVIS with Super + J
+Make JARVIS understand follow-up commands using temporary conversation state.
 
-I want to launch JARVIS only when I need it.
-
-Required behavior:
-- Configure a KDE global keyboard shortcut: `Super + J` (Windows key + J).
-- Pressing it launches the existing JARVIS application using its correct Python interpreter, virtual environment, working directory, and startup command.
-- It must work when triggered from KDE, without requiring an already-open terminal.
-- Display useful startup errors instead of silently failing.
-- Prevent accidental duplicate instances if the shortcut is pressed multiple times.
-- Preserve the existing greeting, voice, wake/session behavior, and functionality where compatible.
-- Do not install an always-running wake-word listener or background AI service solely for this feature.
-- Do not start unnecessary services or load AI models at login.
-
-Inspect the existing KDE environment and choose the simplest reliable implementation, such as a `.desktop` launcher plus KDE custom shortcut, or a small launch script. Use actual project paths and commands, not guessed ones.
-
-## 2. Saying “bye” must shut down JARVIS completely
-
-When I say “bye,” “goodbye,” or another existing supported exit phrase:
-- Stop listening and stop accepting new commands.
-- Stop or safely finish ongoing speech playback.
-- Release audio devices, microphone streams, and other resources.
-- Exit the main process cleanly, including worker threads and child processes owned by JARVIS where appropriate.
-- Ensure the process does not remain hidden in the background or continue consuming resources.
-- Make sure the shortcut can launch a fresh instance afterward.
-
-Do not terminate unrelated desktop applications or kill all Python processes.
-
-Important distinction:
-- JARVIS's own process and in-process models should be released when it exits.
-- Ollama or another separately running model server may retain its own model in RAM. Do not kill unrelated or shared services automatically.
-- If JARVIS started a dedicated child process for its own work, manage that process safely and clean it up on shutdown.
-
-Verify the shutdown behavior using process checks and logs. Report any separate process that legitimately remains running.
-
-## 3. Control applications across my laptop
-
-I want to use natural voice commands to open applications installed on my laptop, not just a small hardcoded list.
-
-Examples:
-- “Open Firefox.”
-- “Open Antigravity.”
-- “Open Visual Studio Code.”
-- “Open the terminal.”
-- “Open Settings.”
-- “Open my file manager.”
-- “Open Downloads.”
-- “Open the browser.”
-- “Open the music player.”
+Example:
+- “Open my JARVIS project.”
+- “Open the main file.” → Resolve this relative to the current project.
+- “Run it.” → Resolve the most recent unambiguous file or task.
+- “Actually, open it in Antigravity.” → Update the active task.
 
 Requirements:
-- Discover installed GUI applications through supported Linux desktop mechanisms, such as `.desktop` application entries and desktop launchers.
-- Reuse the existing application registry/resolver if present and extend it instead of creating a competing system.
-- Resolve application names case-insensitively and support sensible aliases.
-- Prefer desktop launchers or their configured commands so application-specific environment settings are preserved.
-- If an application is not installed or its identity is ambiguous, ask a short clarification or explain the problem.
-- Never claim an application opened unless the launch operation succeeded.
-- Do not hardcode every installed application manually.
-- Do not send every simple open-app command to Ollama. Use a fast local action path.
+- Track the current project, recent file, pending action, active workflow, and recent media search.
+- Store only the context needed to resolve follow-ups.
+- Expire temporary context after a configurable period and clear it when the task ends or the user switches tasks.
+- Ask a concise clarification when multiple interpretations are plausible.
+- Keep persistent user memory separate from temporary conversation state.
+- Never invent a file, project, previous action, or result.
+- Route deterministic commands locally before using Ollama.
 
-## 4. Navigate folders and open files
+## 2. Natural media and desktop follow-ups
 
-I want to control my files and folders naturally through voice.
+Support natural command sequences such as:
 
-Examples:
-- “Open Downloads.”
-- “Open my Documents folder.”
-- “Open the JARVIS project folder.”
-- “Open the Lensify project in my editor.”
-- “Open the file manager at ~/jarvis.”
-- “Find my Python practice folder.”
-- “Open this project in Antigravity.”
-- “Open the README in my JARVIS folder.”
+“Search YouTube for relaxing music.”
+“Play the second result.”
+“Lower the volume to 30 percent.”
+“Skip this.”
+“Find instrumental music instead.”
+
+Also support follow-ups for applications, folders, files, and workflows.
 
 Requirements:
-- Support standard user directories and discoverable project directories.
-- Reuse the existing project resolver, registry, aliases, and persistent memory.
-- Support opening a folder in the default file manager and opening a project in a specified editor.
-- Inspect the real installed Antigravity launcher and its supported command-line arguments before implementing editor-folder opening. Do not assume an executable name or CLI syntax.
-- Resolve relative paths and `~` safely.
-- Validate paths and report missing or ambiguous folders/files.
-- Never silently create, overwrite, move, or delete files when I only asked to open or find them.
-- If I say “open this project in my editor,” use context only when the intended project and editor are unambiguous; otherwise ask a short question.
+- Maintain recent YouTube results and the current media target.
+- Use real browser or media controls supported by the existing environment.
+- Distinguish a search result, an opened video, and verified playback.
+- Use the actual application or media state to confirm execution wherever possible.
+- Never claim an action succeeded merely because an AI model generated a response.
+- Preserve existing validated action handlers and require confirmation for risky operations.
+- Test ambiguity, expired context, missing results, and action failures.
 
-## 5. Search YouTube and actually play the requested content
+## 3. Faster, more natural speech
 
-This is important. I want commands like:
+Optimize responsiveness without downloading larger models or requiring paid APIs.
 
-- “Search YouTube for Hollywood songs and play the first result.”
-- “Search this on youtube.com and play it.”
-- “Find the official Interstellar trailer on YouTube and play it.”
-- “Play relaxing music on YouTube.”
-- “Search YouTube for Python tutorials and open the first video.”
-- “Pause the video.”
-- “Resume playback.”
-- “Stop the video.”
-- “Set volume to 50 percent.”
-- “Increase the volume to 80 percent.”
+Requirements:
+- Measure latency for audio capture, VAD, Whisper, intent extraction, Ollama, action execution, Kokoro generation, and playback.
+- Avoid duplicate transcription, repeated model initialization, and unnecessary Ollama calls.
+- Improve microphone buffering and speech/silence handling without cutting off words.
+- Prevent JARVIS from transcribing its own TTS output.
+- Support safe interruption: when I begin speaking during JARVIS's response, stop or cancel the current speech appropriately, capture my new command, and continue listening.
+- Add sentence-by-sentence speech generation only if it is compatible with the existing TTS implementation and improves measured latency.
+- Keep simple commands on a fast local execution path.
+- Provide a brief spoken acknowledgment for genuinely long operations, without delaying short commands.
+- Preserve the existing wake-word/session design and ensure recoverable errors do not terminate JARVIS.
 
-Expected behavior for a combined search-and-play command:
-1. Recognize the YouTube search query and the request to play a result.
-2. Open the correct YouTube search results or use a reliable existing search/playback integration.
-3. Select the intended result using the project's existing browser automation capabilities, if available.
-4. Open the actual video and initiate playback when technically possible.
-5. Verify playback through an available reliable signal, such as browser automation, player state, or MPRIS.
-6. Tell me what happened truthfully.
+Test short, long, interrupted, and failed speech operations.
 
-Important:
-- Opening a YouTube search page is not the same as playing a video.
-- If autoplay is blocked, the browser is unavailable, the video is inaccessible, or playback cannot be verified, tell me what happened and ask for help only when needed.
-- Do not say “playing now” just because a URL was opened.
-- Respect normal YouTube access restrictions, login requirements, and browser security.
-- Reuse existing browser automation, URL handling, and media controls wherever possible.
-- Inspect whether Firefox actually exposes playback through MPRIS on this machine. Do not assume it does.
-- Avoid introducing a large new browser automation dependency without checking the existing setup first.
-- Use safe URL encoding for search queries.
-- Support follow-up commands such as “play it,” “pause it,” and “resume” by retaining the current media/search context.
-- Do not let unrelated conversational replies be mistaken for media commands.
-- Keep volume control separate from YouTube search/playback when the requested volume operation uses system-wide audio controls.
+## 4. A very small KDE status widget — ONE WORD ONLY
 
-## 6. Fast routing and honest execution
+I want a tiny JARVIS status indicator near the top corner of my desktop, alongside the clock, battery, or other KDE panel widgets.
 
-Inspect the existing intent extractor, router, context manager, workflow engine, action resolver, and memory.
+**Visual requirement: show exactly one short word at a time. No sentences, cards, graphs, or large dashboard.**
 
-Required behavior:
-- Route obvious application, folder, media, and workflow commands through deterministic local handlers before calling Ollama.
-- Use Ollama for genuinely ambiguous or conversational requests, not every simple action.
-- Preserve conversation context for follow-ups such as “play it,” but only when a unique pending media target exists.
-- Execute actions through validated existing handlers. Do not let the LLM generate arbitrary shell commands and execute them without validation.
-- Separate intent recognition from action execution.
-- Report success only after the relevant handler returns success or a reliable signal confirms the action.
-- If an action fails, provide a concise and truthful explanation.
-- Preserve existing workflows, aliases, saved memory, session timeout, wake-word behavior, and natural-language interaction.
-- Keep all existing projects and their identities separate. Do not invent relationships between JARVIS, Lensify, ManageCrew, or other folders.
+Use these status labels:
+- `STANDBY`
+- `LISTENING`
+- `THINKING`
+- `SPEAKING`
+- `ERROR`
 
-## 7. Security and permission boundaries
+Requirements:
+- Update the word from JARVIS's actual runtime state.
+- Use a lightweight, low-resource implementation compatible with Fedora KDE Plasma and Wayland.
+- First inspect the installed KDE Plasma version and supported widget/extension mechanisms.
+- Prefer a native Plasma widget or another small, reliable panel integration compatible with the installed version. Do not assume Plasma 6 APIs if this machine uses Plasma 5.
+- If a native panel widget would require a separate unsupported architecture, implement the smallest reliable alternative and explain the limitation before adding heavy dependencies.
+- Keep it optional and easy to disable or remove.
+- Do not run a separate AI model or heavy GUI process just for the indicator.
+- Use a local, minimal IPC mechanism or an existing event interface to communicate status updates. Do not poll the full JARVIS process constantly.
+- Handle stale state correctly if JARVIS crashes or exits.
+- On intentional shutdown, return the indicator to `STANDBY` or the defined inactive state.
+- When JARVIS is not running, it must not keep JARVIS's models or voice resources in memory.
 
-I want broad control over my own laptop, but implement it safely.
+The panel indicator must remain visually tiny: a single word, minimal padding, no large background panel, and no always-open window. A click may optionally reveal additional diagnostics, but the normal panel display must contain only one word.
 
-- JARVIS may open applications, browse folders, search the web, and interact with normal desktop applications using the current user's permissions.
-- Do not run the assistant as root or use `sudo` automatically.
-- Never bypass file permissions, OS security, browser protections, or authentication.
-- Require explicit confirmation for destructive or sensitive operations, such as deleting files, overwriting data, installing packages, changing security settings, or executing potentially dangerous commands.
-- Do not execute arbitrary commands extracted from speech or model responses.
-- Keep an allowlisted set of supported actions and validate their arguments.
-- Do not silently upload local files or private information to external services.
-- If a request requires elevated permissions or unavailable access, explain the limitation.
+## 5. Integration and safety
 
-## 8. RAM usage and startup performance
+- Reuse the existing core context, router, intent extractor, memory, workflows, speech pipeline, and action handlers.
+- Do not create competing state managers or duplicate audio loops.
+- Keep temporary context separate from persistent memory.
+- Do not execute arbitrary model-generated shell commands.
+- Validate all action arguments and preserve user permissions.
+- Keep JARVIS on-demand, with no always-running wake-word service added solely for this feature.
+- Preserve `Super + J` launch behavior and the “Goodbye, Sir” spoken shutdown sequence if already implemented.
+- Preserve all existing application, folder, browser, media, and workflow functionality.
 
-My laptop has 16 GB RAM. I do not want JARVIS permanently consuming memory when I am not using it.
+## 6. Tests and delivery
 
-- No always-listening service.
-- No automatic AI model loading at laptop startup.
-- Load speech/AI resources only when JARVIS launches, according to the current architecture.
-- Release JARVIS-owned resources on exit.
-- Avoid loading Whisper, Ollama models, or Kokoro multiple times unnecessarily.
-- Avoid duplicate audio capture, repeated transcription, or repeated intent extraction for one utterance.
-- Keep the existing local/offline-first approach and do not introduce paid API requirements.
-- Do not download a larger model or add a heavy dependency unless justified and approved.
-- Instrument startup and shutdown timing if useful, but keep routine voice responses concise.
+First inspect the project and report the relevant files and architecture. Then implement changes in small stages.
 
-## 9. Tests and verification
+Add or update tests for:
+- Follow-up context and context expiration.
+- Current-project file resolution.
+- YouTube result selection and playback verification.
+- Fast-path routing and failed actions.
+- TTS interruption and microphone recovery.
+- Status transitions through standby, listening, thinking, speaking, and error.
+- Widget behavior after normal shutdown and unexpected process exit.
+- Existing workflows and regression tests.
 
-Add or update automated tests using mocks for external desktop actions.
+Run the relevant tests and report actual results. Do not claim that the KDE panel integration was tested on the real desktop if only unit tests or mocks were used.
 
-Cover:
-- Correct launcher command and virtual environment.
-- Shortcut/launcher setup and duplicate-instance prevention.
-- Exit phrases triggering a full, clean JARVIS shutdown.
-- A fresh launch working after shutdown.
-- Discovering and launching installed applications.
-- Opening known folders and projects, including an editor-folder combination.
-- Missing application and missing path handling.
-- Natural-language YouTube search-and-play routing.
-- Distinguishing opening search results from actual playback.
-- Follow-up play, pause, resume, stop, and volume commands.
-- Failed actions never being reported as successful.
-- Existing workflows, memory, and tests continuing to work.
+Finally, provide a concise report of changed files, tests, launch/setup instructions, and any remaining manual steps.
 
-Do not claim that real desktop playback or process shutdown was verified if only mocked tests were run. Clearly separate automated test results from actual manual verification.
-
-## 10. Implementation process and final report
-
-Work in small, safe stages:
-1. Inspect and summarize the current implementation and relevant files.
-2. Identify the smallest set of necessary changes.
-3. Implement the launcher and shutdown lifecycle.
-4. Implement or extend application and folder discovery.
-5. Improve YouTube command routing and playback verification.
-6. Run focused tests, then the existing regression suite.
-7. Test the launcher and shutdown on the real desktop when possible.
-
-Before editing, protect user data and preserve existing memory databases, aliases, and workflow definitions. Do not overwrite configuration or recreate the project.
-
-In your final report, provide:
-- Files created or changed.
-- Exact command used to launch JARVIS.
-- Whether `Super + J` is configured and how it was configured.
-- Whether saying “bye” was verified to terminate the JARVIS process.
-- Whether installed application and folder discovery works.
-- Whether YouTube playback was actually verified or only the search page opened.
-- Tests run and their actual results.
-- Any remaining limitations or manual steps.
-- Any background processes that may still use RAM after JARVIS exits.
-
-**Do not just give me a plan or code snippets. Inspect the existing repository and implement the changes where your environment permits. Never invent test results or claim that an action was performed without evidence.**
+**Implement the changes where your environment permits. Inspect first, preserve existing data, keep RAM usage low, and do not fabricate successful actions or test results.**

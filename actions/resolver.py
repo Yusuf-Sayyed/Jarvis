@@ -307,9 +307,103 @@ class DirectoryResolver:
         return None, []
 
 
+class FileResolver:
+    """Resolves relative project files and entrypoints for conversation follow-ups."""
+
+    @staticmethod
+    def resolve_relative_file(project_path: str, file_query: str) -> tuple[Optional[str], list[str]]:
+        """
+        Resolves a file query relative to an active project directory.
+        Handles phrases like 'the main file', 'readme', 'config', or specific filenames.
+        Returns:
+            (best_match_path, candidates)
+            If unambiguous, best_match_path is the absolute path string.
+            If ambiguous, best_match_path is None and candidates contains all possibilities.
+        """
+        if not project_path or not os.path.isdir(project_path):
+            return None, []
+
+        p_dir = Path(project_path).resolve()
+        clean_q = file_query.lower().strip()
+        clean_q = re.sub(r"^(?:the|my|a|an)\s+", "", clean_q).strip()
+        clean_q = re.sub(r"(?:\s+(?:file|script|code|document))+$", "", clean_q).strip()
+
+        is_main_query = clean_q in (
+            "main", "main file", "main script", "entry point", "entry", "start file",
+            "primary file", "primary script", "app file", "source"
+        ) or bool(re.match(r"^(?:the\s+)?main(?:\s+file|\s+script)?$", clean_q))
+
+        proj_name = p_dir.name.lower()
+
+        if is_main_query:
+            # 1. Check project-named file (e.g. jarvis.py in jarvis project)
+            proj_named = p_dir / f"{proj_name}.py"
+            if proj_named.is_file():
+                return str(proj_named), [str(proj_named)]
+
+            # 2. Check canonical entrypoints in order of precedence
+            canonical_names = [
+                "main.py", "app.py", "run.py", "cli.py", "__main__.py",
+                "index.js", "index.ts", "main.js", "main.ts", "app.js", "app.ts",
+                "main.rs", "main.go"
+            ]
+            for c_name in canonical_names:
+                c_path = p_dir / c_name
+                if c_path.is_file():
+                    return str(c_path), [str(c_path)]
+
+            # 3. Scan immediate directory for code files
+            code_exts = {".py", ".sh", ".js", ".ts", ".rs", ".go", ".cpp", ".c"}
+            immediate_code_files = []
+            try:
+                for entry in p_dir.iterdir():
+                    if entry.is_file() and entry.suffix.lower() in code_exts and not entry.name.startswith("."):
+                        immediate_code_files.append(str(entry.resolve()))
+            except Exception:
+                pass
+
+            if len(immediate_code_files) == 1:
+                return immediate_code_files[0], immediate_code_files
+            elif len(immediate_code_files) > 1:
+                return None, sorted(immediate_code_files)
+            return None, []
+
+        # Specific file query (e.g. "readme", "config", "test_lifecycle")
+        candidates = []
+        try:
+            # 1. Direct match at root
+            for entry in p_dir.iterdir():
+                if not entry.is_file():
+                    continue
+                e_name = entry.name.lower()
+                e_stem = entry.stem.lower()
+                if clean_q == e_name or clean_q == e_stem or clean_q in e_name:
+                    candidates.append(str(entry.resolve()))
+
+            # 2. Shallow search 1 level down if nothing found at root
+            if not candidates:
+                for sub in p_dir.iterdir():
+                    if sub.is_dir() and not sub.name.startswith("."):
+                        for entry in sub.iterdir():
+                            if entry.is_file():
+                                e_name = entry.name.lower()
+                                e_stem = entry.stem.lower()
+                                if clean_q == e_name or clean_q == e_stem:
+                                    candidates.append(str(entry.resolve()))
+        except Exception:
+            pass
+
+        if len(candidates) == 1:
+            return candidates[0], candidates
+        elif len(candidates) > 1:
+            return None, sorted(candidates)
+        return None, []
+
+
 # Global instances
 _REGISTRY: Optional[AppRegistry] = None
 _DIR_RESOLVER: Optional[DirectoryResolver] = None
+_FILE_RESOLVER: Optional[FileResolver] = None
 
 
 def get_app_registry() -> AppRegistry:
@@ -324,3 +418,10 @@ def get_directory_resolver() -> DirectoryResolver:
     if _DIR_RESOLVER is None:
         _DIR_RESOLVER = DirectoryResolver()
     return _DIR_RESOLVER
+
+
+def get_file_resolver() -> FileResolver:
+    global _FILE_RESOLVER
+    if _FILE_RESOLVER is None:
+        _FILE_RESOLVER = FileResolver()
+    return _FILE_RESOLVER

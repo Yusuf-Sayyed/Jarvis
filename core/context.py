@@ -4,6 +4,7 @@ Remembers recent applications, directories, and pending confirmations
 to resolve follow-ups like 'in that folder' or 'open a terminal there too'.
 """
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -59,6 +60,22 @@ class ConversationContext:
     last_target_path: Optional[str] = None
     last_timestamp: float = field(default_factory=time.time)
 
+    # Active project context
+    current_project_name: Optional[str] = None
+    current_project_path: Optional[str] = None
+    project_timestamp: float = 0.0
+    PROJECT_TTL_SECONDS: float = 300.0
+
+    # Recent file context
+    recent_file_name: Optional[str] = None
+    recent_file_path: Optional[str] = None
+    file_timestamp: float = 0.0
+    FILE_TTL_SECONDS: float = 300.0
+
+    # Active task and workflow context
+    active_task: Optional[str] = None
+    active_workflow: Optional[str] = None
+
     # Pending confirmations or clarifications
     pending_action: Optional[str] = None
     pending_payload: Optional[dict[str, Any]] = None
@@ -84,6 +101,8 @@ class ConversationContext:
     pending_youtube_url: Optional[str] = None
     pending_youtube_timestamp: float = 0.0
     YOUTUBE_PENDING_TTL_SECONDS: float = 180.0
+    recent_youtube_results: list[dict[str, str]] = field(default_factory=list)
+    media_target_state: Optional[str] = None  # 'search_page_opened', 'video_opened', 'playback_confirmed'
 
     def update_interaction(
         self,
@@ -161,6 +180,124 @@ class ConversationContext:
         self.pending_youtube_query = None
         self.pending_youtube_url = None
         self.pending_youtube_timestamp = 0.0
+
+    def set_current_project(self, name: str, path: str):
+        """Sets the active project context."""
+        now = time.time()
+        self.current_project_name = name
+        self.current_project_path = path
+        self.project_timestamp = now
+        self.last_target_name = name
+        self.last_target_path = path
+        self.last_timestamp = now
+
+    def get_current_project(self) -> tuple[Optional[str], Optional[str]]:
+        """Returns (project_name, project_path) if valid and not expired."""
+        if not self.current_project_path:
+            return None, None
+        if (time.time() - self.project_timestamp) > self.PROJECT_TTL_SECONDS:
+            self.clear_current_project()
+            return None, None
+        if not os.path.isdir(self.current_project_path):
+            self.clear_current_project()
+            return None, None
+        return self.current_project_name, self.current_project_path
+
+    def clear_current_project(self):
+        """Clears current project context."""
+        self.current_project_name = None
+        self.current_project_path = None
+        self.project_timestamp = 0.0
+
+    def set_recent_file(self, name: str, path: str):
+        """Sets the most recent file context."""
+        now = time.time()
+        self.recent_file_name = name
+        self.recent_file_path = path
+        self.file_timestamp = now
+        self.last_timestamp = now
+
+    def get_recent_file(self) -> tuple[Optional[str], Optional[str]]:
+        """Returns (file_name, file_path) if valid, exists on disk, and not expired."""
+        if not self.recent_file_path:
+            return None, None
+        if (time.time() - self.file_timestamp) > self.FILE_TTL_SECONDS:
+            self.clear_recent_file()
+            return None, None
+        if not os.path.exists(self.recent_file_path):
+            self.clear_recent_file()
+            return None, None
+        return self.recent_file_name, self.recent_file_path
+
+    def clear_recent_file(self):
+        """Clears recent file context."""
+        self.recent_file_name = None
+        self.recent_file_path = None
+        self.file_timestamp = 0.0
+
+    def set_youtube_results(
+        self,
+        query: str,
+        results: list[dict[str, str]],
+        stage: str = "search_page_opened",
+    ):
+        """Records a list of YouTube search results and media state for follow-ups."""
+        now = time.time()
+        self.last_youtube_query = query.strip()
+        self.recent_youtube_results = list(results)
+        self.media_target_state = stage
+        self.pending_youtube_query = query.strip()
+        if results and "url" in results[0]:
+            self.pending_youtube_url = results[0]["url"]
+            self.last_youtube_url = results[0]["url"]
+        self.pending_youtube_timestamp = now
+        self.last_timestamp = now
+
+    def get_youtube_results(self) -> list[dict[str, str]]:
+        """Returns non-expired YouTube search results."""
+        if (time.time() - self.pending_youtube_timestamp) > self.YOUTUBE_PENDING_TTL_SECONDS:
+            self.recent_youtube_results = []
+            return []
+        return list(self.recent_youtube_results)
+
+    def get_youtube_result_by_index(self, index: int) -> Optional[dict[str, str]]:
+        """
+        Retrieves a 1-based YouTube search result (e.g. index=1 for 1st, 2 for 2nd).
+        Returns the result dict with 'title' and 'url', or None if out of range / expired.
+        """
+        results = self.get_youtube_results()
+        if not results:
+            return None
+        zero_idx = index - 1
+        if 0 <= zero_idx < len(results):
+            return results[zero_idx]
+        return None
+
+    def set_media_state(self, stage: str, query: Optional[str] = None, url: Optional[str] = None):
+        """Updates media stage: 'search_page_opened', 'video_opened', 'playback_confirmed'."""
+        self.media_target_state = stage
+        if query:
+            self.last_youtube_query = query
+        if url:
+            self.last_youtube_url = url
+        self.last_timestamp = time.time()
+
+    def get_media_state(self) -> Optional[str]:
+        """Returns current media target state."""
+        return self.media_target_state
+
+    def clear_temporary_context(self):
+        """Clears all short-term conversation, project, file, and media follow-up states."""
+        self.clear_current_project()
+        self.clear_recent_file()
+        self.clear_pending()
+        self.clear_pending_youtube()
+        self.recent_youtube_results = []
+        self.media_target_state = None
+        self.active_task = None
+        self.active_workflow = None
+        self.last_target_path = None
+        self.last_target_name = None
 
     def get_valid_pending(self) -> tuple[Optional[str], Optional[dict[str, Any]]]:
         """Returns valid pending action and payload if within TTL window."""

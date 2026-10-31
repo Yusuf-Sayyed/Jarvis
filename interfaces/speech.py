@@ -139,9 +139,9 @@ def set_cooldown(seconds: float = POST_SPEECH_COOLDOWN_SECONDS):
         _COOLDOWN_UNTIL = time.time() + max(0.0, seconds)
 
 
-def stop_speech():
+def stop_speech(for_interruption: bool = False):
     """Immediately halts active playback and clears pending jobs in queue."""
-    global _IS_SPEAKING, _ACTIVE_PROC, _ACTIVE_JOB
+    global _IS_SPEAKING, _ACTIVE_PROC, _ACTIVE_JOB, _COOLDOWN_UNTIL
     with _STATE_LOCK:
         if _ACTIVE_PROC is not None:
             try:
@@ -167,8 +167,12 @@ def stop_speech():
 
         _ACTIVE_JOB = None
         _IS_SPEAKING = False
-        set_cooldown(POST_SPEECH_COOLDOWN_SECONDS)
-        _log_diag("Playback stopped and queue cleared")
+        if for_interruption:
+            _COOLDOWN_UNTIL = 0.0
+            _log_diag("Playback interrupted by user speech")
+        else:
+            set_cooldown(POST_SPEECH_COOLDOWN_SECONDS)
+            _log_diag("Playback stopped and queue cleared")
 
 
 def reset_speech_state():
@@ -512,6 +516,12 @@ def _play_wav_file(wav_path: str, duration: float) -> bool:
         )
         with _STATE_LOCK:
             _ACTIVE_PROC = proc
+
+        try:
+            from core.status import set_runtime_status
+            set_runtime_status("SPEAKING")
+        except Exception:
+            pass
 
         _log_diag(f"Playback started via {player_name} (pid={proc.pid})")
         timeout = max(TTS_MAX_TIMEOUT_SECONDS, duration + 5.0)

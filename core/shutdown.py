@@ -226,7 +226,13 @@ def perform_clean_shutdown(
         except Exception:
             pass
 
-    # 5. Flush stdio
+    # 5. Flush stdio and reset panel status to STANDBY
+    try:
+        from core.status import set_runtime_status
+        set_runtime_status("STANDBY", details="clean_shutdown")
+    except Exception:
+        pass
+
     try:
         sys.stdout.flush()
         sys.stderr.flush()

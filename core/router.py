@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import time
 from actions import audio, browser, desktop, display, keyboard, media
 from actions.resolver import get_app_registry, get_directory_resolver
@@ -684,6 +685,8 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                     target_name=project_name,
                     target_path=target_path,
                 )
+                context.set_current_project(project_name, target_path)
+                context.clear_recent_file()
             except Exception as e:
                 print(f"[JARVIS Error] Failed to launch {app_info.name}: {e}")
                 memory.record_pattern_failure(text)
@@ -725,15 +728,38 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             return True, None
 
         if smart_action in ("open_project_at", "followup_switch_app"):
-            target_path = smart_params.get("path") or context.get_recent_target_path()
+            target_path = smart_params.get("path") or smart_params.get("project_path") or context.get_recent_target_path()
+            file_path = smart_params.get("file_path")
+            if not file_path:
+                _, recent_fp = context.get_recent_file()
+                file_path = recent_fp
             app_name = smart_params.get("app")
-            if not target_path:
-                print('\n[JARVIS] "No recent project folder is active to open, Sir."\n')
-                return True, None
 
             app_info = app_registry.resolve_application(app_name)
             if not app_info:
                 print(f'\n[JARVIS] "Application \'{app_name}\' is not installed on this system, Sir."\n')
+                return True, None
+
+            from interfaces.speech import speak
+            if file_path and os.path.exists(file_path):
+                print(f'[JARVIS] Opening {file_path} in {app_info.name}...')
+                try:
+                    subprocess.Popen([app_info.exec_path, file_path])
+                    msg = f"Switched to {app_info.name} and opened {os.path.basename(file_path)}, Sir."
+                    print(f"[JARVIS] {msg}")
+                    speak(msg)
+                    context.update_interaction(
+                        action="open_file",
+                        app=app_info.name.lower(),
+                        app_bin=app_info.exec_path,
+                        target_path=file_path,
+                    )
+                except Exception as e:
+                    print(f"[JARVIS Error] Failed to launch {app_info.name}: {e}")
+                return True, None
+
+            if not target_path:
+                print('\n[JARVIS] "No recent project folder is active to open, Sir."\n')
                 return True, None
 
             print(f'[JARVIS] Opening {target_path} in {app_info.name}...')
@@ -756,6 +782,123 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
             except Exception as e:
                 print(f"[JARVIS Error] Failed to launch {app_info.name}: {e}")
 
+            return True, None
+
+        if smart_action == "open_project_file":
+            file_path = smart_params.get("file_path")
+            file_name = smart_params.get("file_name", os.path.basename(file_path) if file_path else "file")
+            app_name = smart_params.get("app") or context.get_recent_app() or "editor"
+            app_info = app_registry.resolve_application(app_name)
+            if not app_info:
+                app_info = app_registry.resolve_application("editor")
+
+            from interfaces.speech import speak
+            if not app_info:
+                print(f'\n[JARVIS] "Editor \'{app_name}\' is not installed on this system, Sir."\n')
+                return True, None
+
+            print(f'[JARVIS] Opening {file_name} in {app_info.name}...')
+            try:
+                subprocess.Popen([app_info.exec_path, file_path])
+                context.set_recent_file(file_name, file_path)
+                context.update_interaction(
+                    action="open_file",
+                    app=app_info.name.lower(),
+                    app_bin=app_info.exec_path,
+                    target_name=file_name,
+                    target_path=file_path,
+                )
+                msg = f"Opened {file_name} in {app_info.name}, Sir."
+                print(f"[JARVIS] {msg}")
+                speak(msg)
+            except Exception as e:
+                print(f"[JARVIS Error] Failed to open {file_name}: {e}")
+            return True, None
+
+        if smart_action == "clarify_project_file":
+            from interfaces.speech import speak
+            candidates = smart_params.get("candidates", [])
+            proj = smart_params.get("project", "project")
+            cand_names = [os.path.basename(c) for c in candidates]
+            msg = f"I found multiple candidate files in {proj}: {', '.join(cand_names)}. Which one would you like me to open, Sir?"
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            context.set_pending("clarify_project_file", {"candidates": candidates, "project": proj})
+            return True, "clarify_project_file"
+
+        if smart_action == "file_not_found":
+            from interfaces.speech import speak
+            query = smart_params.get("query", "file")
+            proj = smart_params.get("project", "current project")
+            msg = f"I could not find '{query}' in your {proj} project, Sir."
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            return True, None
+
+        if smart_action == "no_active_project":
+            from interfaces.speech import speak
+            msg = "No project is currently active, Sir. Which project would you like me to open first?"
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            return True, None
+
+        if smart_action == "run_recent_file":
+            from interfaces.speech import speak
+            file_path = smart_params.get("file_path")
+            file_name = smart_params.get("file_name", os.path.basename(file_path) if file_path else "file")
+            if not file_path or not os.path.exists(file_path):
+                msg = f"File {file_name} could not be located to run, Sir."
+                print(f'\n[JARVIS Error] {msg}\n')
+                speak(msg)
+                return True, None
+
+            file_dir = os.path.dirname(file_path)
+            konsole_bin = shutil.which("konsole") or "/usr/bin/konsole"
+            print(f'[JARVIS] Executing {file_name}...')
+            try:
+                if file_path.endswith(".py"):
+                    subprocess.Popen([konsole_bin, "--workdir", file_dir, "-e", sys.executable, file_path])
+                elif file_path.endswith(".sh"):
+                    subprocess.Popen([konsole_bin, "--workdir", file_dir, "-e", "bash", file_path])
+                elif os.access(file_path, os.X_OK):
+                    subprocess.Popen([konsole_bin, "--workdir", file_dir, "-e", file_path])
+                else:
+                    subprocess.Popen([konsole_bin, "--workdir", file_dir, "-e", sys.executable, file_path])
+
+                msg = f"Running {file_name}, Sir."
+                print(f"[JARVIS] {msg}")
+                speak(msg)
+                context.set_recent_file(file_name, file_path)
+            except Exception as e:
+                print(f"[JARVIS Error] Failed to execute {file_name}: {e}")
+            return True, None
+
+        if smart_action == "clarify_run_target":
+            from interfaces.speech import speak
+            candidates = smart_params.get("candidates", [])
+            proj = smart_params.get("project", "project")
+            cand_names = [os.path.basename(c) for c in candidates]
+            msg = f"Multiple scripts are available in {proj}: {', '.join(cand_names)}. Which one would you like to run, Sir?"
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            return True, None
+
+        if smart_action == "no_run_target":
+            from interfaces.speech import speak
+            msg = "No recent script or unambiguous task is active to run, Sir."
+            print(f'\n[JARVIS] "{msg}"\n')
+            speak(msg)
+            return True, None
+
+        if smart_action == "youtube_instead":
+            from interfaces.speech import speak
+            query = smart_params.get("query")
+            context.clear_pending_youtube()
+            res = browser.play_youtube_video(query)
+            msg = res.get("message", f"Searching YouTube for '{query}' instead, Sir.")
+            stage = res.get("stage", "video_opened")
+            print(f"[JARVIS | Playback Stage: {stage}] {msg}")
+            speak(msg)
             return True, None
 
     # 1.6 Conversational Memory Actions (Facts, Preferences, Recall, Deletion, Update)
@@ -984,7 +1127,7 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
         context.set_pending_youtube(query=query, url=res.get("url") if isinstance(res, dict) else None)
         return True, None
 
-    if intent == "YOUTUBE_FIRST_RESULT":
+    if intent in ("YOUTUBE_FIRST_RESULT", "YOUTUBE_RESULT_SELECT"):
         vol = params.get("volume")
         vol_prefix = ""
         if vol is not None:
@@ -993,10 +1136,14 @@ def route_command(text: str, pending_action: str | None = None) -> tuple[bool, s
                 vol_prefix = f"Volume set to {vol}%. "
             else:
                 vol_prefix = f"Volume warning: {vol_msg}. "
-        print("[Intent: YOUTUBE_FIRST_RESULT]")
-        res = browser.open_first_youtube_result()
+        idx = params.get("index", 1) if isinstance(params, dict) else 1
+        print(f"[Intent: {intent} | Index: {idx}]")
+        if idx == 1:
+            res = browser.open_first_youtube_result()
+        else:
+            res = browser.open_youtube_result(result_index=idx)
         stage = res.get("stage", "video_opened") if isinstance(res, dict) else "video_opened"
-        base_msg = res.get("message", "Opened first result on YouTube, Sir.") if isinstance(res, dict) else "Opened first result on YouTube, Sir."
+        base_msg = res.get("message", "Opened selected result on YouTube, Sir.") if isinstance(res, dict) else "Opened selected result on YouTube, Sir."
         final_msg = f"{vol_prefix}{base_msg}".strip()
         print(f"[JARVIS | Stage: {stage}] {final_msg}")
         from interfaces.speech import speak

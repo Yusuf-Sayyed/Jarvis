@@ -485,6 +485,25 @@ RE_USE_APP_INSTEAD = re.compile(
     r"^(?:actually\s+)?use\s+(.+?)(?:\s+instead)?$",
     re.IGNORECASE,
 )
+RE_OPEN_RELATIVE_FILE = re.compile(
+    r"^(?:open|launch|edit|show|view)\s+(?:the\s+|a\s+|my\s+)?"
+    r"(main(?:\s+file|\s+script)?|entry(?:\s+point)?|readme|config|requirements|tests?|[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)"
+    r"(?:\s+file|\s+script)?$",
+    re.IGNORECASE,
+)
+RE_RUN_IT = re.compile(
+    r"^(?:run|execute|start)\s+(?:it|this|the\s+file|the\s+script|the\s+main\s+file|the\s+code)$",
+    re.IGNORECASE,
+)
+RE_ACTUALLY_OPEN_IN_APP = re.compile(
+    r"^(?:actually\s*,?\s*)?(?:open|launch|edit)\s+(?:it|this|that|the\s+project|the\s+file)?\s*(?:in|into|with)\s+(.+?)(?:\s+instead)?$|"
+    r"^(?:actually\s*,?\s*)?(?:switch\s+to|use)\s+(.+?)(?:\s+instead)?$",
+    re.IGNORECASE,
+)
+RE_INSTEAD_QUERY = re.compile(
+    r"^(?:find|search(?:\s+for)?|play)\s+(.+?)\s+instead$",
+    re.IGNORECASE,
+)
 
 
 def parse_teaching_request(clean_text: str) -> Optional[dict[str, Any]]:
@@ -930,6 +949,107 @@ def extract_smart_intent(text: str, skip_teaching: bool = False) -> Optional[dic
         return {"action": "window_control", "params": {"action": "switch"}, "from_cache": False}
 
     # 5. Conversational Follow-Up Patterns (< 1ms)
+    # 5a. Relative file resolution ("Open the main file", "Open readme", "Open config")
+    m_rel_file = RE_OPEN_RELATIVE_FILE.match(clean_text)
+    if m_rel_file:
+        file_query = m_rel_file.group(1).strip()
+        proj_name, proj_path = context.get_current_project()
+        if not proj_path:
+            proj_path = context.get_recent_target_path()
+            proj_name = context.last_target_name or "current project"
+
+        if proj_path:
+            from actions.resolver import get_file_resolver
+            best_file, candidates = get_file_resolver().resolve_relative_file(proj_path, file_query)
+            if best_file:
+                recent_app = context.get_recent_app() or "editor"
+                return {
+                    "action": "open_project_file",
+                    "params": {
+                        "file_path": best_file,
+                        "file_name": os.path.basename(best_file),
+                        "project": proj_name,
+                        "app": recent_app,
+                    },
+                    "is_followup": True,
+                }
+            elif len(candidates) > 1:
+                return {
+                    "action": "clarify_project_file",
+                    "params": {"candidates": candidates, "query": file_query, "project": proj_name},
+                    "is_followup": True,
+                }
+            else:
+                return {
+                    "action": "file_not_found",
+                    "params": {"query": file_query, "project": proj_name},
+                    "is_followup": True,
+                }
+        else:
+            return {
+                "action": "no_active_project",
+                "params": {"query": file_query},
+                "is_followup": True,
+            }
+
+    # 5b. Run unambiguous file or task ("Run it", "Run this")
+    if RE_RUN_IT.match(clean_text):
+        file_name, file_path = context.get_recent_file()
+        if file_path and os.path.exists(file_path):
+            return {
+                "action": "run_recent_file",
+                "params": {"file_path": file_path, "file_name": file_name},
+                "is_followup": True,
+            }
+        proj_name, proj_path = context.get_current_project()
+        if not proj_path:
+            proj_path = context.get_recent_target_path()
+            proj_name = context.last_target_name
+        if proj_path:
+            from actions.resolver import get_file_resolver
+            best_file, candidates = get_file_resolver().resolve_relative_file(proj_path, "main")
+            if best_file:
+                return {
+                    "action": "run_recent_file",
+                    "params": {"file_path": best_file, "file_name": os.path.basename(best_file)},
+                    "is_followup": True,
+                }
+            elif candidates:
+                return {
+                    "action": "clarify_run_target",
+                    "params": {"candidates": candidates, "project": proj_name},
+                    "is_followup": True,
+                }
+        return {
+            "action": "no_run_target",
+            "params": {},
+            "is_followup": True,
+        }
+
+    # 5c. Actually, open it in Antigravity / switch app ("Actually, open it in Antigravity")
+    m_act = RE_ACTUALLY_OPEN_IN_APP.match(clean_text)
+    if m_act:
+        new_app = (m_act.group(1) or m_act.group(2) or "").strip()
+        file_name, file_path = context.get_recent_file()
+        proj_name, proj_path = context.get_current_project()
+        if not proj_path:
+            proj_path = context.get_recent_target_path()
+        return {
+            "action": "followup_switch_app",
+            "params": {"app": new_app, "file_path": file_path, "project_path": proj_path},
+            "is_followup": True,
+        }
+
+    # 5d. "Find instrumental music instead"
+    m_instead = RE_INSTEAD_QUERY.match(clean_text)
+    if m_instead:
+        new_q = m_instead.group(1).strip()
+        return {
+            "action": "youtube_instead",
+            "params": {"query": new_q},
+            "is_followup": True,
+        }
+
     if RE_TERMINAL_THERE.match(clean_text):
         target_path = context.get_recent_target_path()
         return {"action": "launch_terminal_at", "params": {"path": target_path}, "is_followup": True}

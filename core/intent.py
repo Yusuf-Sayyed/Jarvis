@@ -185,7 +185,7 @@ RE_MEDIA_SEEK_BACK = re.compile(
     re.IGNORECASE,
 )
 RE_MEDIA_NEXT = re.compile(
-    r"^(?:next\s+(?:video|track|song|media)|skip\s+(?:video|track|song))$",
+    r"^(?:next(?:\s+(?:video|track|song|media|one))?|skip(?:\s+(?:this|video|track|song|one))?)$",
     re.IGNORECASE,
 )
 RE_MEDIA_PREV = re.compile(
@@ -463,7 +463,31 @@ def parse_youtube_play(text: str) -> tuple[str | None, str | None]:
     cleaned = normalize_spoken_text(text)
     cleaned_no_vol, _ = extract_embedded_volume(cleaned)
 
-    # 1. "Open the first YouTube result" / "Play the first result"
+    # 1. "Open the first YouTube result" / "Play the second result" / "Play the third video"
+    m_idx = re.match(
+        r"^(?:open|play)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|result\s+\d+|video\s+\d+)(?:\s+(?:youtube\s+)?(?:result|video))?$",
+        cleaned_no_vol,
+        re.IGNORECASE,
+    )
+    if m_idx:
+        raw_idx = m_idx.group(1).lower().strip()
+        idx_map = {
+            "first": 1, "1st": 1,
+            "second": 2, "2nd": 2,
+            "third": 3, "3rd": 3,
+            "fourth": 4, "4th": 4,
+            "fifth": 5, "5th": 5,
+        }
+        res_idx = idx_map.get(raw_idx)
+        if not res_idx:
+            m_num = re.search(r"\d+", raw_idx)
+            if m_num:
+                res_idx = int(m_num.group(0))
+        if res_idx == 1:
+            return "YOUTUBE_FIRST_RESULT", None
+        elif res_idx and res_idx > 1:
+            return "YOUTUBE_RESULT_SELECT", str(res_idx)
+
     first_result_phrases = (
         "open the first youtube result", "open first youtube result",
         "open the first result", "open first result",
@@ -1016,10 +1040,16 @@ def detect_intent(text: str, pending_action: str | None = None) -> tuple[str, di
         text_no_vol, emb_vol = extract_embedded_volume(text)
         play_intent, play_query = parse_youtube_play(text_no_vol)
         if play_intent == "YOUTUBE_FIRST_RESULT":
-            params = {}
+            params = {"index": 1}
             if emb_vol is not None:
                 params["volume"] = emb_vol
             return "YOUTUBE_FIRST_RESULT", params
+        if play_intent == "YOUTUBE_RESULT_SELECT":
+            idx = int(play_query) if play_query and str(play_query).isdigit() else 1
+            params = {"index": idx}
+            if emb_vol is not None:
+                params["volume"] = emb_vol
+            return "YOUTUBE_RESULT_SELECT", params
         if play_intent == "YOUTUBE_PLAY_PROMPT":
             params = {}
             if emb_vol is not None:

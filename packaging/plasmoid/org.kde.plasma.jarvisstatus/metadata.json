@@ -1,0 +1,18 @@
+{
+    "KPlugin": {
+        "Id": "org.kde.plasma.jarvisstatus",
+        "Name": "JARVIS Status",
+        "Description": "Minimal one-word panel indicator for JARVIS",
+        "Authors": [
+            {
+                "Name": "JARVIS"
+            }
+        ],
+        "Category": "Status Information",
+        "Icon": "audio-headset",
+        "License": "MIT",
+        "Version": "1.0",
+        "Website": "https://github.com/Yusuf-Sayyed/Jarvis"
+    },
+    "KPackageStructure": "Plasma/Applet"
+}
