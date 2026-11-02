@@ -77,7 +77,7 @@ def _stop_microphone(stream=None, speech_engine=None):
 
 
 def speak_goodbye(
-    timeout_seconds: float = 6.0,
+    timeout_seconds: float = 12.0,
     stream=None,
     speech_engine=None,
 ) -> bool:
@@ -143,7 +143,7 @@ def perform_clean_shutdown(
     speech_engine=None,
     exit_code: int = 0,
     speak_farewell: bool = True,
-    timeout_seconds: float = 6.0,
+    timeout_seconds: float = 12.0,
     reason: str = "normal",
 ):
     """
@@ -228,8 +228,8 @@ def perform_clean_shutdown(
 
     # 5. Flush stdio and reset panel status to STANDBY
     try:
-        from core.status import set_runtime_status
-        set_runtime_status("STANDBY", details="clean_shutdown")
+        from core.status import clear_runtime_status
+        clear_runtime_status()
     except Exception:
         pass
 

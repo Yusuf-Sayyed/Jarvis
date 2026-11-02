@@ -22,30 +22,77 @@ class TestShutdown(unittest.TestCase):
         shutdown_mod.reset_shutdown_state()
 
     def test_exit_intent_recognition(self):
-        """Verifies that all supported exit phrases correctly extract to EXIT intent."""
+        """Verifies that all required and natural exit phrases correctly extract to EXIT intent."""
         exit_phrases = [
-            "bye",
-            "goodbye",
+            # Required by user prompt
+            "Bye",
+            "Bye JARVIS",
+            "Goodbye",
+            "Goodbye JARVIS",
+            "You can go now",
+            "Shut down JARVIS",
+            "Exit JARVIS",
+            "Stop listening",
+            # Variations & Whisper transcription quirks
+            "Bye, Jarvis.",
             "bye jarvis",
-            "goodbye jarvis",
-            "exit",
+            "Goodbye, Jarvis!",
+            "Bye bye",
+            "Bye-bye",
+            "Bye bye, Jarvis",
+            "Good bye",
+            "Good bye, Jarvis.",
+            "You can go now, Jarvis",
+            "You can go now.",
+            "Jarvis, you can go now",
+            "Jarvis, stop listening",
+            "Stop listening, Jarvis.",
+            "Stop listening now",
+            "Shut down, Jarvis.",
+            "Shutdown, Jarvis.",
+            "Jarvis, shut down",
+            "Exit, Jarvis.",
+            "Jarvis, exit",
+            "By, Jarvis.",
+            "Buy, Jarvis.",
+            "Go to sleep, Jarvis",
+            "Power off, Jarvis",
+            "Hey Jarvis, bye for now, thank you",
+            "Jarvis, please stop listening now, sir",
+            "Okay Jarvis, you can leave now",
+            "Jarvis you are dismissed",
             "quit",
+            "exit",
             "stop jarvis",
             "see ya",
             "cya",
-            "see you later",
-            "go to sleep",
-            "shut down",
-            "shutdown",
-            "power down",
-            "power off",
-            "alright bye",
-            "bye for now",
         ]
         for phrase in exit_phrases:
             with self.subTest(phrase=phrase):
                 intent, params = detect_intent(phrase)
                 self.assertEqual(intent, "EXIT", f"Failed for phrase: '{phrase}'")
+
+    def test_exit_intent_negative_guards(self):
+        """Verifies that casual conversation and sentences containing exit words do not trigger shutdown."""
+        non_exit_phrases = [
+            "Say bye to Sarah for me",
+            "The bye election is next week",
+            "I want to buy a new laptop",
+            "Don't stop listening",
+            "Why did you stop listening?",
+            "Can you go now to the store?",
+            "Stop the music",
+            "Stop the video",
+            "Pause the video",
+            "Search YouTube for bye bye birdie",
+            "Shut down the computer",
+            "Shut down Firefox",
+            "Stop playing",
+        ]
+        for phrase in non_exit_phrases:
+            with self.subTest(phrase=phrase):
+                intent, params = detect_intent(phrase)
+                self.assertNotEqual(intent, "EXIT", f"Erroneously triggered EXIT for: '{phrase}'")
 
     @patch("interfaces.speech.speak")
     def test_speak_goodbye_speaks_and_is_idempotent(self, mock_speak):
@@ -146,6 +193,40 @@ class TestShutdown(unittest.TestCase):
         mock_audio_mgr.terminate.assert_called_once()
         mock_lock_release.assert_called_once()
 
+    @patch("interfaces.speech.speak")
+    @patch("core.shutdown.speak_goodbye")
+    def test_shortcut_stop_signal_shutdown_does_not_speak_goodbye(self, mock_goodbye, mock_speak):
+        """
+        Verifies that when shutdown is requested via shortcut / signal:
+        1. It does NOT speak goodbye or wait for speech.
+        2. Releases audio streams, manager, and instance lock.
+        3. Cleans runtime status to STANDBY with cleared PID.
+        """
+        from core.status import get_runtime_status, set_runtime_status
+
+        set_runtime_status("LISTENING")
+
+        mock_stream = MagicMock()
+        mock_audio_mgr = MagicMock()
+        mock_lock_release = MagicMock()
+
+        shutdown_mod.perform_clean_shutdown(
+            stream=mock_stream,
+            audio_mgr=mock_audio_mgr,
+            speak_farewell=False,
+            reason="signal_SIGTERM",
+        )
+
+        mock_goodbye.assert_not_called()
+        mock_speak.assert_not_called()
+        mock_stream.close.assert_called_once()
+        mock_audio_mgr.terminate.assert_called_once()
+
+        st = get_runtime_status()
+        self.assertEqual(st["status"], "STANDBY")
+        self.assertIsNone(st["pid"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

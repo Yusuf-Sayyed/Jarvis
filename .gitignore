@@ -17,5 +17,6 @@ models/
 
 
 # Compiled local binaries
-bin/
+bin/*
 !bin/launch_jarvis.sh
+!bin/stop_jarvis.sh

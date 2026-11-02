@@ -90,8 +90,13 @@ GREET_ON_STANDALONE_WAKE = True     # Speak greeting when activated via wake-wor
 
 EXIT_COMMANDS = (
     "exit jarvis", "quit jarvis", "stop jarvis", "exit", "quit",
-    "goodbye jarvis", "goodbye", "bye jarvis", "bye", "see ya", "cya", "hello cya",
-    "see you later", "go to sleep", "shut down", "shutdown", "power down", "power off"
+    "goodbye jarvis", "goodbye", "good bye", "good-bye", "good bye jarvis",
+    "bye jarvis", "bye", "bye bye", "bye-bye", "see ya", "cya", "hello cya",
+    "see you later", "go to sleep", "shut down", "shutdown", "shut down jarvis",
+    "shutdown jarvis", "power down", "power off", "power down jarvis", "power off jarvis",
+    "you can go now", "you can go", "you may go now", "you may go",
+    "you can leave now", "you can leave", "you may leave now", "you may leave",
+    "stop listening", "stop listening now", "stop listening jarvis", "you are dismissed", "dismissed",
 )
 
 

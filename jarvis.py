@@ -65,12 +65,18 @@ def acquire_instance_lock() -> bool:
 
 
 def release_instance_lock():
-    """Releases the instance lock file upon shutdown."""
+    """Releases and removes the instance lock file upon shutdown."""
     global _LOCK_FILE_OBJ
     if _LOCK_FILE_OBJ:
         try:
+            lock_path = _LOCK_FILE_OBJ.name
             fcntl.flock(_LOCK_FILE_OBJ, fcntl.LOCK_UN)
             _LOCK_FILE_OBJ.close()
+            if lock_path and os.path.exists(lock_path):
+                try:
+                    os.remove(lock_path)
+                except OSError:
+                    pass
         except Exception:
             pass
         _LOCK_FILE_OBJ = None
@@ -171,15 +177,13 @@ def main():
         sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
         logger.debug("[Lifecycle] Termination signal received (%s). Shutting down cleanly.", sig_name)
         perform_clean_shutdown(
-            stream if "stream" in locals() else None,
-            audio_mgr if "audio_mgr" in locals() else None,
-            speech_engine if "speech_engine" in locals() else None,
             speak_farewell=False,
             reason=f"signal_{sig_name}",
         )
 
     try:
         signal.signal(signal.SIGTERM, _handle_termination_signal)
+        signal.signal(signal.SIGINT, _handle_termination_signal)
     except Exception:
         pass
 
@@ -218,6 +222,7 @@ def main():
 
     # 4. Perform startup greeting (spoken once per desktop login session)
     perform_startup_greeting(stream, speech_engine)
+    set_runtime_status("STANDBY")
 
     # 5. Initialize wake-word session state and acoustic clap detector
     session = SessionState()

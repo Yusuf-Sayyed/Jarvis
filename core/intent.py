@@ -370,56 +370,136 @@ def is_exit_command(text: str) -> bool:
     """
     Determines if spoken text represents an explicit, intentional exit instruction.
     Prevents ordinary conversation, embedded words, or background noise from accidentally
-    shutting down JARVIS.
+    shutting down JARVIS. Handles Whisper acoustic variations (e.g. 'by jarvis', 'buy jarvis',
+    'bye-bye', 'good bye').
     """
     if not text:
         return False
 
-    raw = text.strip().lower().rstrip(".?!, ").strip()
-    if not raw:
+    raw = text.strip().lower()
+    t = raw.replace("-", " ")
+    t = re.sub(r"[^\w\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
         return False
 
-    if raw in EXIT_COMMANDS:
+    # Negative guards: Prevent accidental exits on casual or unrelated speech
+    # 1. Questions regarding stopping or leaving
+    if re.search(r"\b(why|what|when|where|who|how|is it|are you|did you)\b", t):
+        return False
+    # 2. Negations ("don't stop listening", "do not exit", etc.)
+    if re.search(r"\b(don\x27t|dont|do not|never|shouldn\x27t|shouldnt|stop not)\b", t):
+        return False
+    # 3. Third-person or indirect references ('say bye to', 'wave bye', 'said goodbye')
+    if re.search(r"\b(say|said|tell|told|wave|waved|waving|wishes?|wished)\s+(?:bye|goodbye)\b", t):
+        return False
+    # 4. Homophones and idioms ('bye election', 'buy milk', etc.)
+    if re.search(r"\bbye\s+election\b", t):
+        return False
+    if re.search(r"\b(?:buy|by)\s+(?!jarvis\b|bye\b|by\b|sir\b|now\b)", t):
+        return False
+    # 5. Imperatives directed at external targets ("go to the store", "shut down Firefox", "stop the music")
+    if re.search(r"\bgo\s+to\s+(?!sleep\b)", t):
+        return False
+    if re.search(r"\bshut\s+down\s+(?:the|a|an|my|this)\b", t):
+        return False
+    if re.search(r"\bstop\s+(?:the|a|an|my|this|playing|music|video|playback|song|media|audio)\b", t):
+        return False
+    if re.search(r"\b(?:search|look\s+up|find|play)\b", t):
+        return False
+
+    # Standardize Whisper phonetic quirks for bye / goodbye
+    t = re.sub(r"\b(?:good\s+bye|good\s+by|good\s+buy)\b", "goodbye", t)
+    t = re.sub(r"\b(?:by|buy)\s+jarvis\b", "bye jarvis", t)
+    t = re.sub(r"\b(?:by\s+by|by\s+bye|bye\s+by)\b", "bye bye", t)
+
+    # Check unstripped normalized phrase against EXIT_COMMANDS
+    if t in EXIT_COMMANDS:
         return True
 
-    clean = normalize_spoken_text(text).strip().lower().rstrip(".?!, ").strip()
-    if clean in EXIT_COMMANDS:
-        return True
+    had_jarvis = bool(re.search(r"\bjarvis\b", t))
 
-    # Strip optional wake words / conversational prefixes
-    prefixes = (
-        "hey jarvis", "ok jarvis", "okay jarvis", "hello jarvis", "hi jarvis",
-        "wake up jarvis", "jarvis", "alright", "okay", "ok", "thanks", "thank you",
-    )
-    core = clean
-    for p in sorted(prefixes, key=len, reverse=True):
-        if core.startswith(p):
-            remainder = core[len(p):].strip().lstrip(",:;. ")
-            if remainder:
-                core = remainder
-            break
+    # Iteratively strip conversational lead-ins and wake words
+    prefix_patterns = [
+        r"^(?:hey|hi|hello|ok|okay)\s+jarvis\b",
+        r"^wake\s+up\s+jarvis\b",
+        r"^jarvis\b",
+        r"^(?:ok|okay|alright|all\s+right)\b",
+        r"^(?:thanks|thank\s+you)\b",
+        r"^(?:please|can\s+you|could\s+you|would\s+you)\b",
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for p in prefix_patterns:
+            new_t = re.sub(p, "", t).strip()
+            if new_t != t:
+                t = new_t
+                changed = True
 
-    # Strip optional polite / closing suffixes
-    suffixes = ("jarvis", "sir", "please", "now", "for now", "all", "everyone")
-    for s in sorted(suffixes, key=len, reverse=True):
-        if core.endswith(s):
-            remainder = core[:-len(s)].strip().rstrip(",:;. ")
-            if remainder:
-                core = remainder
-            break
+    # Iteratively strip polite closing suffixes
+    suffix_patterns = [
+        r"\b(?:jarvis|sir)\s*$",
+        r"\b(?:please|now|for\s+now)\s*$",
+        r"\b(?:thank\s+you|thanks)\s*$",
+        r"\b(?:all|everyone)\s*$",
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for s in suffix_patterns:
+            new_t = re.sub(s, "", t).strip()
+            if new_t != t:
+                t = new_t
+                changed = True
 
-    if core in EXIT_COMMANDS:
-        return True
-
-    extended_exit_phrases = {
-        "alright bye", "bye for now", "okay bye", "ok bye",
-        "goodbye for now", "see you soon", "until next time",
-        "have a good day", "have a good night", "take care",
+    exact_exit_cores = {
+        "bye",
+        "bye bye",
+        "goodbye",
+        "see ya",
+        "cya",
+        "see you later",
+        "see you soon",
+        "until next time",
+        "have a good day",
+        "have a good night",
+        "take care",
+        # Dismissals
+        "you can go",
+        "you can go now",
+        "you may go",
+        "you may go now",
+        "you can leave",
+        "you can leave now",
+        "you may leave",
+        "you may leave now",
+        "you are dismissed",
+        "you re dismissed",
+        "dismissed",
+        # Terminations
+        "shut down",
+        "shutdown",
+        "power down",
+        "power off",
+        "go to sleep",
+        "sleep",
+        "exit",
+        "quit",
+        "close",
+        # Stop listening
+        "stop listening",
+        "stop listening now",
     }
-    if raw in extended_exit_phrases or clean in extended_exit_phrases or core in extended_exit_phrases:
+
+    if had_jarvis and t in ("stop", "halt"):
+        return True
+
+    if t in exact_exit_cores or t in EXIT_COMMANDS:
         return True
 
     return False
+
 
 
 def sanitize_search_query(query: str) -> str:

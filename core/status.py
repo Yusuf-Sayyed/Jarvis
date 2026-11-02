@@ -32,7 +32,9 @@ def get_status_file_path() -> Path:
     return base / "status.json"
 
 
-def set_runtime_status(status: str, details: Optional[str] = None) -> bool:
+def set_runtime_status(
+    status: str, details: Optional[str] = None, pid: Any = -1
+) -> bool:
     """
     Sets the runtime status of JARVIS.
     Validates status against allowed one-word states and writes atomically.
@@ -41,9 +43,11 @@ def set_runtime_status(status: str, details: Optional[str] = None) -> bool:
     if clean_status not in VALID_STATUSES:
         clean_status = "ERROR"
 
+    actual_pid = os.getpid() if pid == -1 else pid
+
     payload = {
         "status": clean_status,
-        "pid": os.getpid(),
+        "pid": actual_pid,
         "timestamp": time.time(),
         "details": details or "",
     }
@@ -115,5 +119,5 @@ def get_runtime_status() -> dict[str, Any]:
 
 
 def clear_runtime_status():
-    """Returns the runtime indicator to STANDBY cleanly."""
-    set_runtime_status(DEFAULT_STATUS, details="normal_shutdown")
+    """Returns the runtime indicator to STANDBY cleanly and clears active PID."""
+    set_runtime_status(DEFAULT_STATUS, details="normal_shutdown", pid=None)

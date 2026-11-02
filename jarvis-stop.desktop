@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Stop JARVIS
+GenericName=Stop Voice Assistant
+Comment=Stop the running JARVIS assistant
+Exec=/home/yusuf/jarvis/bin/stop_jarvis.sh
+Icon=process-stop
+Terminal=false
+Categories=Utility;AudioVideo;
+X-KDE-Shortcuts=Meta+Shift+J
+StartupNotify=false
